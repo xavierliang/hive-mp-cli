@@ -126,6 +126,7 @@ _DEFAULT_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
     "Referer": "https://mp.weixin.qq.com/",
 }
+_REQUEST_TIMEOUT = 30.0
 
 
 class WeChatAPI:
@@ -141,7 +142,7 @@ class WeChatAPI:
     # ------------------------------------------------------------------ login
     def request_qr(self) -> QRSession:
         """GET login page, regex out the QR url + uuid, download the QR PNG."""
-        resp = self.session.get(f"{self.BASE_URL}/")
+        resp = self.session.get(f"{self.BASE_URL}/", timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
 
         qr_match = re.search(
@@ -157,7 +158,7 @@ class WeChatAPI:
 
         qr_url = qr_match.group(1)
         uuid = uuid_match.group(1)
-        img_resp = self.session.get(qr_url)
+        img_resp = self.session.get(qr_url, timeout=_REQUEST_TIMEOUT)
         img_resp.raise_for_status()
 
         return QRSession(
@@ -181,7 +182,7 @@ class WeChatAPI:
             "ajax": 1,
         }
         try:
-            resp = self.session.get(url, params=params)
+            resp = self.session.get(url, params=params, timeout=_REQUEST_TIMEOUT)
             resp.raise_for_status()
         except requests.RequestException as exc:
             logger.warning("poll_status request failed: %s", exc)
@@ -224,6 +225,7 @@ class WeChatAPI:
         resp = self.session.post(
             f"{self.BASE_URL}/cgi-bin/bizlogin?action=login",
             data=login_data,
+            timeout=_REQUEST_TIMEOUT,
         )
         resp.raise_for_status()
         self.cookies = requests.utils.dict_from_cookiejar(self.session.cookies)
@@ -262,7 +264,10 @@ class WeChatAPI:
         if not self.token:
             return False
         try:
-            resp = self.session.get(f"{self.BASE_URL}/cgi-bin/home?token={self.token}")
+            resp = self.session.get(
+                f"{self.BASE_URL}/cgi-bin/home?token={self.token}",
+                timeout=_REQUEST_TIMEOUT,
+            )
             resp.raise_for_status()
         except requests.RequestException as exc:
             logger.warning("verify_login HTTP failed: %s", exc)
@@ -293,7 +298,12 @@ class WeChatAPI:
             "f": "json",
             "ajax": "1",
         }
-        resp = self.session.get(url, params=params, headers=self._fix_headers(url))
+        resp = self.session.get(
+            url,
+            params=params,
+            headers=self._fix_headers(url),
+            timeout=_REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         payload = resp.json()
         parse_response_status(payload)
@@ -317,7 +327,12 @@ class WeChatAPI:
             "f": "json",
             "ajax": "1",
         }
-        resp = self.session.get(url, params=params, headers=self._fix_headers(url))
+        resp = self.session.get(
+            url,
+            params=params,
+            headers=self._fix_headers(url),
+            timeout=_REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         payload = resp.json()
         parse_response_status(payload)
@@ -341,7 +356,12 @@ class WeChatAPI:
             "f": "json",
             "ajax": 1,
         }
-        resp = self.session.get(url, params=params, headers=self._fix_headers(url))
+        resp = self.session.get(
+            url,
+            params=params,
+            headers=self._fix_headers(url),
+            timeout=_REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         payload = resp.json()
         parse_response_status(payload)
@@ -353,7 +373,7 @@ class WeChatAPI:
         headers.update(
             {
                 "User-Agent": random_legacy_ua(),
-                "Refer": url,
+                "Referer": url,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
                 "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Accept-Encoding": "gzip, deflate, br",

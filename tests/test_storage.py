@@ -37,8 +37,23 @@ def test_upsert_and_dedup(tmp_home: Path) -> None:
         new1 = db_store.upsert_article(conn, _row("https://x.com/1"))
         new2 = db_store.upsert_article(conn, _row("https://x.com/1"))
     assert new1 is True
-    # Second insert should not count as new (rowcount semantics on UPSERT)
-    assert new2 is False or new2 is True  # SQLite returns rowcount=1 even on update; tolerate both
+    assert new2 is False
+
+
+def test_upsert_preserves_existing_local_path_on_metadata_refresh(tmp_home: Path) -> None:
+    first = _row("https://x.com/1")
+    first["local_path"] = "A/2026-01-01--title.md"
+    first["fetch_status"] = "success"
+    refresh = {**first, "local_path": "", "fetch_status": "metadata-only"}
+
+    with db_store.connect() as conn:
+        assert db_store.upsert_article(conn, first) is True
+        assert db_store.upsert_article(conn, refresh) is False
+        row = db_store.get_article(conn, first["id"])
+
+    assert row is not None
+    assert row["local_path"] == "A/2026-01-01--title.md"
+    assert row["fetch_status"] == "success"
 
 
 def test_list_articles_filters(tmp_home: Path) -> None:

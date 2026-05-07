@@ -68,24 +68,32 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 def upsert_article(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
     """Insert if new. Returns True if new row was inserted."""
-    cur = conn.execute(
+    existed = has_article(conn, row["id"])
+    conn.execute(
         """
         INSERT INTO articles (id, biz_id, faker_id, url, title, author, publish_time,
                                fetched_at, local_path, summary, article_type, fetch_status)
         VALUES (:id, :biz_id, :faker_id, :url, :title, :author, :publish_time,
                 :fetched_at, :local_path, :summary, :article_type, :fetch_status)
         ON CONFLICT(id) DO UPDATE SET
-            title=excluded.title,
-            author=excluded.author,
-            publish_time=excluded.publish_time,
-            local_path=excluded.local_path,
-            summary=excluded.summary,
+            title=COALESCE(NULLIF(excluded.title, ''), title),
+            author=COALESCE(NULLIF(excluded.author, ''), author),
+            publish_time=COALESCE(excluded.publish_time, publish_time),
+            fetched_at=excluded.fetched_at,
+            local_path=COALESCE(NULLIF(excluded.local_path, ''), local_path),
+            summary=COALESCE(NULLIF(excluded.summary, ''), summary),
             article_type=excluded.article_type,
-            fetch_status=excluded.fetch_status
+            fetch_status=CASE
+                WHEN excluded.fetch_status = 'metadata-only'
+                     AND excluded.local_path = ''
+                     AND COALESCE(local_path, '') <> ''
+                THEN fetch_status
+                ELSE COALESCE(NULLIF(excluded.fetch_status, ''), fetch_status)
+            END
         """,
         row,
     )
-    return cur.rowcount > 0 and cur.lastrowid is not None
+    return not existed
 
 
 def has_article(conn: sqlite3.Connection, article_id: str) -> bool:

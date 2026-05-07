@@ -7,7 +7,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -31,7 +31,10 @@ from hive_mp_cli.wechat.gather.base import (
 from hive_mp_cli.wechat.parser import article_to_markdown, extract_excerpt
 
 logger = logging.getLogger(__name__)
-console = Console()
+console = Console(stderr=True)
+_VALID_MODES = {"api", "web"}
+_BODY_FAILURE_STATUSES = {"blocked", "deleted", "failed"}
+_FAILED_STATUSES = _BODY_FAILURE_STATUSES | {"partial"}
 
 
 def sync_cmd(
@@ -52,26 +55,41 @@ def sync_cmd(
     setup_logging(log_dir=PATHS.logs_dir)
     PATHS.ensure()
 
-    out_root = Path(out).expanduser() if out else PATHS.articles_dir
+    if mode not in _VALID_MODES:
+        _emit_error(
+            json_output,
+            "invalid_mode",
+            f"--mode must be one of: {', '.join(sorted(_VALID_MODES))}",
+            code=1,
+            mode=mode,
+        )
+
+    out_root = Path(out).expanduser().resolve() if out else PATHS.articles_dir
     out_root.mkdir(parents=True, exist_ok=True)
 
     targets = _resolve_targets(name_or_biz)
     if not targets:
-        console.print(f"[yellow]No subscribed accounts match '{name_or_biz}'.[/yellow]")
-        raise typer.Exit(code=1)
+        target = name_or_biz or "<all>"
+        _emit_error(
+            json_output,
+            "account_not_found",
+            f"No subscribed accounts match '{target}'.",
+            code=1,
+            target=target,
+        )
 
     since_ts = _parse_since(since) if since else None
 
     try:
         api = make_api_from_token()
     except InvalidSessionError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=3)
+        _emit_error(json_output, "login_expired", str(exc), code=3)
 
     cfg = GatherConfig(max_pages=max_pages)
     aggregate: dict[str, GatherStats] = {}
     for acc in targets:
-        console.print(f"[bold cyan]→ syncing[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
+        if not json_output:
+            console.print(f"[bold cyan]→ syncing[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
         try:
             stats = asyncio.run(
                 _sync_one(
@@ -86,13 +104,13 @@ def sync_cmd(
                 )
             )
         except InvalidSessionError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=3)
+            _emit_error(json_output, "login_expired", str(exc), code=3)
         aggregate[acc.get("name", acc.get("biz_id", "?"))] = stats
-        console.print(
-            f"  [green]done[/green] new={stats.new_articles} "
-            f"existing={stats.existing_articles} failed={stats.failed_articles}"
-        )
+        if not json_output:
+            console.print(
+                f"  [green]done[/green] new={stats.new_articles} "
+                f"existing={stats.existing_articles} failed={stats.failed_articles}"
+            )
         random_sleep(cfg.post_account_min, cfg.post_account_max, label="between accounts")
 
     if json_output:
@@ -129,6 +147,7 @@ async def _sync_one(
         return stats
 
     fetcher: ArticleFetcher | None = None
+    sync_id: int | None = None
     try:
         with db_store.connect() as conn:
             sync_id = db_store.start_sync(conn, biz_id=biz_id, faker_id=faker_id)
@@ -164,6 +183,10 @@ async def _sync_one(
                     body_html = fetched.get("content") or ""
                     fetch_status = fetched.get("fetch_status") or "success"
                     article_type = fetched.get("article_type") or 0
+                    if fetch_status in _BODY_FAILURE_STATUSES:
+                        body_html = ""
+                    elif fetch_status == "success" and not body_html:
+                        fetch_status = "partial"
                     if fetched.get("title") and not title:
                         title = fetched["title"]
                     if not publish_time and fetched.get("publish_time"):
@@ -193,11 +216,13 @@ async def _sync_one(
                     md_path = files_store.write_article(
                         out_root, name, publish_time, title, md_text
                     )
-                    local_path = str(md_path.relative_to(out_root) if md_path.is_relative_to(out_root) else md_path)
+                    local_path = _stored_local_path(md_path, out_root)
                 else:
                     local_path = ""
 
                 summary = extract_excerpt(body_html or item.get("digest") or "")
+                if fetch_status in _FAILED_STATUSES:
+                    stats.failed_articles += 1
 
                 row = {
                     "id": article_id,
@@ -211,7 +236,7 @@ async def _sync_one(
                     "local_path": local_path,
                     "summary": summary,
                     "article_type": article_type,
-                    "fetch_status": fetch_status if body_html else "metadata-only",
+                    "fetch_status": fetch_status,
                 }
                 inserted = db_store.upsert_article(conn, row)
                 if inserted:
@@ -222,16 +247,20 @@ async def _sync_one(
                 random_sleep(cfg.post_article_min, cfg.post_article_max, label="post-article")
 
             db_store.finish_sync(conn, sync_id, stats.new_articles)
+            sync_id = None
 
         accounts_store.update_last_synced(biz_id or name)
     except FrequencyControlError as exc:
         stats.errors.append(str(exc))
+        _finish_sync_after_error(sync_id, stats, str(exc))
         logger.warning("frequency control hit: %s", exc)
     except InvalidSessionError:
         # Let the caller exit with code 3 — token is bad and won't recover this run
+        _finish_sync_after_error(sync_id, stats, "login expired")
         raise
     except Exception as exc:
         stats.errors.append(repr(exc))
+        _finish_sync_after_error(sync_id, stats, repr(exc))
         logger.exception("sync_one failed for %s", name)
     finally:
         if fetcher is not None:
@@ -243,8 +272,47 @@ async def _sync_one(
 def _iter_list(api: WeChatAPI, faker_id: str, cfg: GatherConfig, mode: str):
     if mode == "api":
         yield from api_mode.list_articles(api, faker_id, cfg)
-    else:
+    elif mode == "web":
         yield from web_mode.list_articles(api, faker_id, cfg)
+    else:
+        raise ValueError(f"invalid sync mode: {mode}")
+
+
+def _emit_error(
+    json_output: bool,
+    error: str,
+    message: str,
+    code: int,
+    **extra: Any,
+) -> NoReturn:
+    if json_output:
+        payload = {"ok": False, "error": error, "message": message, **extra}
+        typer.echo(_json.dumps(payload, ensure_ascii=False))
+    else:
+        console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code=code)
+
+
+def _stored_local_path(md_path: Path, out_root: Path) -> str:
+    try:
+        if (
+            out_root.resolve() == PATHS.articles_dir.resolve()
+            and md_path.is_relative_to(out_root)
+        ):
+            return str(md_path.relative_to(out_root))
+    except OSError:
+        pass
+    return str(md_path)
+
+
+def _finish_sync_after_error(sync_id: int | None, stats: GatherStats, error: str) -> None:
+    if sync_id is None:
+        return
+    try:
+        with db_store.connect() as conn:
+            db_store.finish_sync(conn, sync_id, stats.new_articles, error=error)
+    except Exception as exc:
+        logger.warning("failed to finish sync log %s after error: %s", sync_id, exc)
 
 
 def _resolve_targets(name_or_biz: str | None) -> list[dict[str, Any]]:

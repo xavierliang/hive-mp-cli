@@ -23,4 +23,9 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from hive_mp_cli.storage import files as files_store  # noqa: F401
     monkeypatch.setattr(db_store, "PATHS", new_paths)
 
+    from hive_mp_cli.commands import article as article_cmd
+    from hive_mp_cli.commands import sync as sync_cmd
+    monkeypatch.setattr(article_cmd, "PATHS", new_paths)
+    monkeypatch.setattr(sync_cmd, "PATHS", new_paths)
+
     return tmp_path

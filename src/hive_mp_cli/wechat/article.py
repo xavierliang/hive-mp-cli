@@ -104,7 +104,7 @@ class ArticleFetcher:
 
         for marker, status in _DELETED_MARKERS:
             if marker in body_text:
-                info["content"] = "" if status == "blocked" else "DELETED"
+                info["content"] = ""
                 info["fetch_error"] = marker
                 info["fetch_status"] = "blocked" if status == "blocked" else "deleted"
                 return info

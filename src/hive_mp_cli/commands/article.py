@@ -4,6 +4,7 @@ from __future__ import annotations
 import json as _json
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -138,7 +139,8 @@ def read_cmd(
             )
         raise typer.Exit(code=1)
 
-    full_path = PATHS.articles_dir / local
+    local_path = Path(local).expanduser()
+    full_path = local_path if local_path.is_absolute() else PATHS.articles_dir / local_path
     final_path = str(full_path if full_path.exists() else local)
     if json_output:
         typer.echo(_json.dumps({"ok": True, "path": final_path}, ensure_ascii=False))
