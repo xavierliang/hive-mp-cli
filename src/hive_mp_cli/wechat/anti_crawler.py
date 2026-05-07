@@ -212,10 +212,19 @@ _JS_FILES = ["anti_crawler_base.js", "anti_crawler_advanced.js", "anti_crawler_b
 def load_init_script() -> str:
     """Concatenate the 3 anti-crawler JS files into a single Playwright init script."""
     parts = []
+    missing = []
     for fname in _JS_FILES:
         path = _JS_DIR / fname
         if path.exists():
             parts.append(f"// === {fname} ===\n" + path.read_text(encoding="utf-8"))
+        else:
+            missing.append(fname)
+    if missing:
+        # Surface as a hard error rather than silently degrading to no anti-crawler.
+        raise RuntimeError(
+            f"Anti-crawler JS files missing from package: {missing}. "
+            f"Check wheel build (pyproject.toml force-include)."
+        )
     return "\n\n".join(parts)
 
 

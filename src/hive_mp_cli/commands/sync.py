@@ -26,7 +26,6 @@ from hive_mp_cli.wechat.gather.base import (
     GatherStats,
     InvalidSessionError,
     make_api_from_token,
-    parse_response_status,
     random_sleep,
 )
 from hive_mp_cli.wechat.parser import article_to_markdown, extract_excerpt

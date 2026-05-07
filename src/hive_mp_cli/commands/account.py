@@ -11,20 +11,16 @@ from rich.table import Table
 from hive_mp_cli.config import PATHS
 from hive_mp_cli.log import setup as setup_logging
 from hive_mp_cli.storage import accounts as accounts_store
-from hive_mp_cli.wechat.gather.base import (
-    InvalidSessionError,
-    make_api_from_token,
-    parse_response_status,
-)
+from hive_mp_cli.wechat.api import WeChatAPI
+from hive_mp_cli.wechat.gather.base import InvalidSessionError, make_api_from_token
 
 app = typer.Typer(help="Manage subscribed WeChat public accounts.", no_args_is_help=True)
 console = Console()
 
 
-def _resolve_account(api: object, name_or_biz: str) -> dict | None:
+def _resolve_account(api: WeChatAPI, name_or_biz: str) -> dict | None:
     """Search by keyword and return the first hit's basic fields."""
-    payload = api.search_biz(name_or_biz, limit=10)  # type: ignore[attr-defined]
-    parse_response_status(payload)
+    payload = api.search_biz(name_or_biz, limit=10)
     items = payload.get("list") or []
     if not items:
         return None
@@ -106,12 +102,23 @@ def list_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
 
 
 @app.command("remove")
-def remove_cmd(name_or_biz: str = typer.Argument(...)) -> None:
+def remove_cmd(
+    name_or_biz: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
     """Remove a subscribed account."""
     if accounts_store.remove(name_or_biz):
-        console.print(f"[green]Removed[/green] {name_or_biz}")
+        if json_output:
+            typer.echo(_json.dumps({"ok": True, "removed": name_or_biz}, ensure_ascii=False))
+        else:
+            console.print(f"[green]Removed[/green] {name_or_biz}")
     else:
-        console.print(f"[yellow]Not found:[/yellow] {name_or_biz}")
+        if json_output:
+            typer.echo(
+                _json.dumps({"ok": False, "error": "not_found", "name": name_or_biz}, ensure_ascii=False)
+            )
+        else:
+            console.print(f"[yellow]Not found:[/yellow] {name_or_biz}")
         raise typer.Exit(code=1)
 
 

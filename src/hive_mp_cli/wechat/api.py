@@ -27,6 +27,32 @@ def generate_uuid() -> str:
     return str(_uuid.uuid4()).replace("-", "")
 
 
+class InvalidSessionError(RuntimeError):
+    """Raised when the WeChat backend reports an invalid session (re-login required)."""
+
+
+class FrequencyControlError(RuntimeError):
+    """Raised when the backend returns frequency-control code 200013."""
+
+
+def parse_response_status(payload: dict[str, Any]) -> None:
+    """Translate ``base_resp.ret`` into our typed exceptions.
+
+    Single source of truth for ret-code semantics; called by every WeChatAPI
+    method that returns JSON, so callers never see a payload with a non-zero ret.
+    """
+    base = payload.get("base_resp") or {}
+    ret = base.get("ret")
+    if ret in (None, 0):
+        return
+    if ret == 200013:
+        raise FrequencyControlError("微信触发了频率限制 (200013)")
+    if ret == 200003:
+        raise InvalidSessionError("登录已失效 (200003)，请重新执行 `hive-mp login`")
+    err = base.get("err_msg", str(ret))
+    raise RuntimeError(f"微信 API 错误: {err} (ret={ret})")
+
+
 def cookie_expire(cookies: list[dict[str, Any]]) -> dict[str, Any]:
     """Pick the most authoritative cookie expiry. Ports driver/cookies.py:expire().
 
@@ -269,7 +295,9 @@ class WeChatAPI:
         }
         resp = self.session.get(url, params=params, headers=self._fix_headers(url))
         resp.raise_for_status()
-        return resp.json()
+        payload = resp.json()
+        parse_response_status(payload)
+        return payload
 
     def list_articles_appmsg(
         self, faker_id: str, begin: int = 0, count: int = 5
@@ -291,7 +319,9 @@ class WeChatAPI:
         }
         resp = self.session.get(url, params=params, headers=self._fix_headers(url))
         resp.raise_for_status()
-        return resp.json()
+        payload = resp.json()
+        parse_response_status(payload)
+        return payload
 
     def list_articles_publish(
         self, faker_id: str, begin: int = 0, count: int = 5
@@ -313,7 +343,9 @@ class WeChatAPI:
         }
         resp = self.session.get(url, params=params, headers=self._fix_headers(url))
         resp.raise_for_status()
-        return resp.json()
+        payload = resp.json()
+        parse_response_status(payload)
+        return payload
 
     def _fix_headers(self, url: str) -> dict[str, str]:
         from hive_mp_cli.wechat.anti_crawler import random_legacy_ua

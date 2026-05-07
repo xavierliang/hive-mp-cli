@@ -16,22 +16,27 @@ from __future__ import annotations
 import logging
 import random
 import time
-from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
 
 from hive_mp_cli.auth import token as token_store
-from hive_mp_cli.wechat.api import WeChatAPI
+from hive_mp_cli.wechat.api import (
+    FrequencyControlError,
+    InvalidSessionError,
+    WeChatAPI,
+    parse_response_status,
+)
+
+__all__ = [
+    "FrequencyControlError",
+    "InvalidSessionError",
+    "GatherConfig",
+    "GatherStats",
+    "make_api_from_token",
+    "parse_response_status",
+    "random_sleep",
+]
 
 logger = logging.getLogger(__name__)
-
-
-class InvalidSessionError(RuntimeError):
-    """Raised when the WeChat backend reports an invalid session (re-login required)."""
-
-
-class FrequencyControlError(RuntimeError):
-    """Raised when the backend returns frequency-control code 200013."""
 
 
 @dataclass
@@ -87,15 +92,3 @@ def make_api_from_token() -> WeChatAPI:
     return api
 
 
-def parse_response_status(payload: dict[str, Any]) -> None:
-    """Translate ``base_resp.ret`` into our typed exceptions."""
-    base = payload.get("base_resp") or {}
-    ret = base.get("ret")
-    if ret in (None, 0):
-        return
-    if ret == 200013:
-        raise FrequencyControlError("微信触发了频率限制 (200013)")
-    if ret == 200003:
-        raise InvalidSessionError("登录已失效 (200003)，请重新执行 `hive-mp login`")
-    err = base.get("err_msg", str(ret))
-    raise RuntimeError(f"微信 API 错误: {err} (ret={ret})")

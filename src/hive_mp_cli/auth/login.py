@@ -56,16 +56,17 @@ def perform_login(
         if status == "success":
             break
         if status == "invalid_session":
-            _cleanup_qr(qr_path)
-            raise RuntimeError("Session invalid — please retry login.")
+            raise RuntimeError(f"Session invalid — please retry login. QR retained at {qr_path}.")
     else:
-        _cleanup_qr(qr_path)
-        raise RuntimeError(f"Login timed out after {int(timeout)}s.")
+        raise RuntimeError(
+            f"Login timed out after {int(timeout)}s. QR retained at {qr_path}."
+        )
 
     info = api.complete_login()
     if not info["token"]:
-        _cleanup_qr(qr_path)
-        raise RuntimeError("Login completed but no token was returned.")
+        raise RuntimeError(
+            f"Login completed but no token was returned. QR retained at {qr_path}."
+        )
 
     expiry = cookie_expire(info["cookie_list"])
     payload = {
@@ -80,6 +81,8 @@ def perform_login(
 
 
 def _cleanup_qr(qr_path: Path) -> None:
+    """Remove the QR PNG. Only called on the success path; failure paths
+    deliberately retain the file so the user can rescan."""
     try:
         qr_path.unlink()
     except OSError:

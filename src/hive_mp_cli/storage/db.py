@@ -56,8 +56,12 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.executescript(_SCHEMA)
-        yield conn
-        conn.commit()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     finally:
         conn.close()
 

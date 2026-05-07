@@ -1,6 +1,7 @@
 """Markdown file output: ``<articles_root>/<account>/<YYYY-MM-DD>--<slug>.md``."""
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -41,13 +42,21 @@ def write_article(
     folder.mkdir(parents=True, exist_ok=True)
     name = article_filename(publish_time, title)
     path = folder / name
-    if path.exists():
-        # Title collision under same date; append a counter
-        stem, ext = path.stem, path.suffix
-        for i in range(2, 100):
-            alt = folder / f"{stem}--{i}{ext}"
-            if not alt.exists():
-                path = alt
-                break
-    path.write_text(body, encoding="utf-8")
-    return path
+    candidates = [path] + [folder / f"{path.stem}--{i}{path.suffix}" for i in range(2, 100)]
+    for candidate in candidates:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        except Exception:
+            # Don't leave a half-written empty file behind.
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+            raise
+        return candidate
+    raise RuntimeError(f"Could not allocate a unique filename under {folder}")

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json as _json
+import sqlite3
 from datetime import datetime
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -26,6 +28,25 @@ def _to_date(s: str | None) -> int | None:
             return int(datetime.strptime(s, "%Y-%m-%d").timestamp())
         except ValueError as exc:
             raise typer.BadParameter(f"not a date: {s}") from exc
+
+
+def _resolve_article(conn: sqlite3.Connection, id_or_url: str) -> tuple[dict[str, Any] | None, bool]:
+    """Look up an article by id (full or prefix) or full URL.
+
+    Returns ``(row_or_None, ambiguous)``.
+    """
+    row = db_store.get_article(conn, id_or_url)
+    if row:
+        return row, False
+    cur = conn.execute(
+        "SELECT * FROM articles WHERE id LIKE ? || '%' LIMIT 2",
+        (id_or_url,),
+    ).fetchall()
+    if len(cur) == 1:
+        return dict(cur[0]), False
+    if len(cur) > 1:
+        return None, True
+    return None, False
 
 
 @app.command("list")
@@ -72,48 +93,91 @@ def list_cmd(
 @app.command("read")
 def read_cmd(
     article_id: str = typer.Argument(..., help="Article id (sha256 of url, prefix OK) or full URL."),
+    json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Print the local markdown path for an article."""
     with db_store.connect() as conn:
-        row = db_store.get_article(conn, article_id)
-        if not row:
-            # Try prefix match against id
-            cur = conn.execute(
-                "SELECT * FROM articles WHERE id LIKE ? || '%' LIMIT 2",
-                (article_id,),
-            ).fetchall()
-            if len(cur) == 1:
-                row = dict(cur[0])
-            elif len(cur) > 1:
-                console.print(f"[yellow]Ambiguous id prefix '{article_id}'.[/yellow]")
-                raise typer.Exit(code=1)
-    if not row:
-        console.print(f"[yellow]No such article:[/yellow] {article_id}")
+        row, ambiguous = _resolve_article(conn, article_id)
+
+    if ambiguous:
+        if json_output:
+            typer.echo(
+                _json.dumps(
+                    {"ok": False, "error": "ambiguous_prefix", "id": article_id}, ensure_ascii=False
+                )
+            )
+        else:
+            console.print(f"[yellow]Ambiguous id prefix '{article_id}'.[/yellow]")
         raise typer.Exit(code=1)
+    if not row:
+        if json_output:
+            typer.echo(
+                _json.dumps({"ok": False, "error": "not_found", "id": article_id}, ensure_ascii=False)
+            )
+        else:
+            console.print(f"[yellow]No such article:[/yellow] {article_id}")
+        raise typer.Exit(code=1)
+
     local = row.get("local_path") or ""
     if not local:
-        console.print(f"[yellow]Article has no local markdown (status: {row.get('fetch_status')})[/yellow]")
+        if json_output:
+            typer.echo(
+                _json.dumps(
+                    {
+                        "ok": False,
+                        "error": "no_local_markdown",
+                        "id": row["id"],
+                        "fetch_status": row.get("fetch_status"),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            console.print(
+                f"[yellow]Article has no local markdown (status: {row.get('fetch_status')})[/yellow]"
+            )
         raise typer.Exit(code=1)
+
     full_path = PATHS.articles_dir / local
-    typer.echo(str(full_path if full_path.exists() else local))
+    final_path = str(full_path if full_path.exists() else local)
+    if json_output:
+        typer.echo(_json.dumps({"ok": True, "path": final_path}, ensure_ascii=False))
+    else:
+        typer.echo(final_path)
 
 
 @app.command("url")
-def url_cmd(article_id: str = typer.Argument(...)) -> None:
+def url_cmd(
+    article_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
     """Print the original mp.weixin.qq.com URL for an article."""
     with db_store.connect() as conn:
-        row = db_store.get_article(conn, article_id)
-        if not row:
-            cur = conn.execute(
-                "SELECT * FROM articles WHERE id LIKE ? || '%' LIMIT 2",
-                (article_id,),
-            ).fetchall()
-            if len(cur) == 1:
-                row = dict(cur[0])
-    if not row:
-        console.print(f"[yellow]No such article:[/yellow] {article_id}")
+        row, ambiguous = _resolve_article(conn, article_id)
+
+    if ambiguous:
+        if json_output:
+            typer.echo(
+                _json.dumps(
+                    {"ok": False, "error": "ambiguous_prefix", "id": article_id}, ensure_ascii=False
+                )
+            )
+        else:
+            console.print(f"[yellow]Ambiguous id prefix '{article_id}'.[/yellow]")
         raise typer.Exit(code=1)
-    typer.echo(row["url"])
+    if not row:
+        if json_output:
+            typer.echo(
+                _json.dumps({"ok": False, "error": "not_found", "id": article_id}, ensure_ascii=False)
+            )
+        else:
+            console.print(f"[yellow]No such article:[/yellow] {article_id}")
+        raise typer.Exit(code=1)
+
+    if json_output:
+        typer.echo(_json.dumps({"ok": True, "url": row["url"]}, ensure_ascii=False))
+    else:
+        typer.echo(row["url"])
 
 
 @app.command("search")

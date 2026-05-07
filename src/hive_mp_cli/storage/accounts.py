@@ -4,14 +4,34 @@ Schema:
     {"accounts": [{"biz_id": str, "faker_id": str, "name": str,
                     "intro": str, "avatar_url": str,
                     "added_at": int, "last_synced": int | None}]}
+
+All read-modify-write paths run under an exclusive ``fcntl.flock`` on a
+sibling lock file, so concurrent ``hive-mp account add`` / ``sync``
+processes can't lose each other's writes.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from hive_mp_cli.config import PATHS
+
+
+@contextlib.contextmanager
+def _locked() -> Iterator[None]:
+    """Hold an exclusive lock on accounts.json.lock for the whole RMW cycle."""
+    PATHS.home.mkdir(parents=True, exist_ok=True)
+    lock_path = PATHS.accounts_file.with_suffix(".json.lock")
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def _read() -> dict[str, Any]:
@@ -48,39 +68,42 @@ def add(account: dict[str, Any]) -> dict[str, Any]:
     """Insert or update by biz_id."""
     if not account.get("biz_id"):
         raise ValueError("account.biz_id is required")
-    data = _read()
-    for i, acc in enumerate(data["accounts"]):
-        if acc.get("biz_id") == account["biz_id"]:
-            merged = {**acc, **account}
-            data["accounts"][i] = merged
-            _write(data)
-            return merged
-    new = {
-        "added_at": int(time.time()),
-        "last_synced": None,
-        **account,
-    }
-    data["accounts"].append(new)
-    _write(data)
-    return new
+    with _locked():
+        data = _read()
+        for i, acc in enumerate(data["accounts"]):
+            if acc.get("biz_id") == account["biz_id"]:
+                merged = {**acc, **account}
+                data["accounts"][i] = merged
+                _write(data)
+                return merged
+        new = {
+            "added_at": int(time.time()),
+            "last_synced": None,
+            **account,
+        }
+        data["accounts"].append(new)
+        _write(data)
+        return new
 
 
 def remove(name_or_biz: str) -> bool:
-    data = _read()
-    before = len(data["accounts"])
-    data["accounts"] = [
-        a for a in data["accounts"] if a.get("biz_id") != name_or_biz and a.get("name") != name_or_biz
-    ]
-    if len(data["accounts"]) != before:
-        _write(data)
-        return True
-    return False
+    with _locked():
+        data = _read()
+        before = len(data["accounts"])
+        data["accounts"] = [
+            a for a in data["accounts"] if a.get("biz_id") != name_or_biz and a.get("name") != name_or_biz
+        ]
+        if len(data["accounts"]) != before:
+            _write(data)
+            return True
+        return False
 
 
 def update_last_synced(name_or_biz: str, ts: int | None = None) -> None:
     ts = ts or int(time.time())
-    data = _read()
-    for acc in data["accounts"]:
-        if acc.get("biz_id") == name_or_biz or acc.get("name") == name_or_biz:
-            acc["last_synced"] = ts
-    _write(data)
+    with _locked():
+        data = _read()
+        for acc in data["accounts"]:
+            if acc.get("biz_id") == name_or_biz or acc.get("name") == name_or_biz:
+                acc["last_synced"] = ts
+        _write(data)

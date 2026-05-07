@@ -10,12 +10,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from hive_mp_cli.wechat.api import WeChatAPI
-from hive_mp_cli.wechat.gather.base import (
-    FrequencyControlError,
-    GatherConfig,
-    parse_response_status,
-    random_sleep,
-)
+from hive_mp_cli.wechat.gather.base import GatherConfig, random_sleep
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +30,7 @@ def list_articles(
     while i < config.max_pages:
         begin = i * config.page_size
         random_sleep(0, config.page_interval, label=f"page-{i + 1}")
-        try:
-            payload = api.list_articles_publish(faker_id, begin=begin, count=config.page_size)
-        except FrequencyControlError:
-            raise
-        parse_response_status(payload)
+        payload = api.list_articles_publish(faker_id, begin=begin, count=config.page_size)
 
         publish_page_raw = payload.get("publish_page")
         if not publish_page_raw:
