@@ -74,7 +74,6 @@ def html_to_markdown(content: str, account_name: str | None = None) -> str:
             cleaned,
         )
         cleaned = re.sub(r"\n\s*\n\s*\n+", "\n", cleaned)
-        cleaned = re.sub(r"\*", "", cleaned)
 
         # Preserve image titles by promoting to alt
         soup = BeautifulSoup(cleaned, "html.parser")

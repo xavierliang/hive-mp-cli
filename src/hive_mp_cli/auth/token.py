@@ -67,6 +67,16 @@ def status() -> dict[str, Any]:
     expiry_ts = expiry.get("expiry_timestamp")
     remaining = int(expiry_ts - time.time()) if expiry_ts else None
     token_str = data.get("token") or ""
+    if remaining is not None and remaining <= 0:
+        # Token file is on disk but the timestamp says it's already expired.
+        # Treat as logged-out so callers exit with the "login expired" code,
+        # while still surfacing the expiry timestamp for debugging.
+        return {
+            "logged_in": False,
+            "expired": True,
+            "expiry_time": expiry.get("expiry_time"),
+            "remaining_seconds": remaining,
+        }
     return {
         "logged_in": True,
         "token_preview": (token_str[:8] + "...") if len(token_str) > 8 else token_str,

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from hive_mp_cli.cli import app
 from hive_mp_cli.storage import accounts as accounts_store
 
 
@@ -40,3 +44,14 @@ def test_update_last_synced(tmp_home: Path) -> None:
     accounts_store.update_last_synced("biz1", ts=1700000000)
     acc = accounts_store.find("biz1")
     assert acc["last_synced"] == 1700000000
+
+
+def test_account_info_json_not_found_is_parseable(tmp_home: Path) -> None:
+    """`account info <missing> --json` must emit JSON, not plain text."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["account", "info", "missing-account", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"] == "not_found"
+    assert payload["name_or_biz"] == "missing-account"

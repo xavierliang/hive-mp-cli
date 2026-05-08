@@ -53,6 +53,26 @@ def test_status_when_logged_in(tmp_home: Path) -> None:
     assert 1700 <= (s["remaining_seconds"] or 0) <= 1800
 
 
+def test_status_reports_expired_token_as_logged_out(tmp_home: Path) -> None:
+    """A token file with a past expiry should not count as logged in."""
+    token_store.save(
+        {
+            "token": "tok-expired-xyz",
+            "cookies_str": "a=b",
+            "fingerprint": "fp",
+            "expiry": {
+                "expiry_timestamp": time.time() - 60,
+                "remaining_seconds": -60,
+                "expiry_time": "2026-05-08 00:00:00",
+            },
+        }
+    )
+    s = token_store.status()
+    assert s["logged_in"] is False
+    assert s["expired"] is True
+    assert s["remaining_seconds"] < 0
+
+
 def test_clear_removes_file(tmp_home: Path) -> None:
     token_store.save({"token": "x", "cookies_str": "a=b"})
     assert (tmp_home / "token.json").exists()

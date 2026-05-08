@@ -35,6 +35,16 @@ def test_html_to_markdown_preserves_image_alt_from_title() -> None:
     assert "Caption" in md
 
 
+def test_html_to_markdown_preserves_asterisks_in_text() -> None:
+    """`*` in body text must survive — it's load-bearing in code, math, prose.
+
+    markdownify will escape literal ``*`` to ``\\*`` so the markdown renders back
+    to a real asterisk; we only care that the character isn't dropped.
+    """
+    md = html_to_markdown("<p>use **kwargs in Python: a * b = c</p>")
+    assert md.count("*") == 3  # **kwargs (2) + a * b (1)
+
+
 def test_extract_excerpt_truncates() -> None:
     long_html = "<p>" + "a" * 500 + "</p>"
     assert len(extract_excerpt(long_html, length=50)) == 53  # 50 + "..."

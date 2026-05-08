@@ -55,7 +55,7 @@ def test_sync_preserves_blocked_status_without_markdown(
     _patch_one_item(monkeypatch)
     monkeypatch.setattr(sync_cmd, "ArticleFetcher", BlockedFetcher)
 
-    stats = asyncio.run(
+    stats, _code = asyncio.run(
         sync_cmd._sync_one(
             api=object(),
             account={"biz_id": "biz1", "faker_id": "fake1", "name": "Account A"},
@@ -183,7 +183,7 @@ def test_sync_skips_already_succeeded(tmp_home: Path, monkeypatch: Any) -> None:
     )
     assert fetch_calls["n"] == 1
 
-    stats2 = asyncio.run(
+    stats2, _code2 = asyncio.run(
         sync_cmd._sync_one(
             api=object(),
             account=account,
@@ -250,7 +250,7 @@ def test_sync_repairs_blocked_then_succeeds(tmp_home: Path, monkeypatch: Any) ->
 
     # Now swap in a successful fetcher and run repair.
     monkeypatch.setattr(sync_cmd, "ArticleFetcher", _SuccessFetcher)
-    repair_stats = asyncio.run(
+    repair_stats, _ = asyncio.run(
         sync_cmd._repair_one(
             account=account,
             cfg=GatherConfig(max_pages=1),
@@ -266,6 +266,128 @@ def test_sync_repairs_blocked_then_succeeds(tmp_home: Path, monkeypatch: Any) ->
     assert after["has_content"] == 1
     assert after["fetch_status"] == "success"
     assert after["fetch_attempts"] == 2  # one blocked + one successful repair
+
+
+def test_sync_streaming_keeps_page_one_when_page_two_trips_frequency_control(
+    tmp_home: Path, monkeypatch: Any
+) -> None:
+    """Page 1 articles must be committed even if page 2 raises FrequencyControlError."""
+    from hive_mp_cli.wechat.gather.base import FrequencyControlError
+
+    items_page_1 = [
+        _item(url=f"https://mp.weixin.qq.com/s/p1-{i}") for i in range(3)
+    ]
+
+    def streaming_iter(api, faker_id, cfg, mode):  # type: ignore[no-untyped-def]
+        for it in items_page_1:
+            yield it
+        # Page 2 trips frequency control mid-iteration.
+        raise FrequencyControlError("ret=200013 frequency control")
+
+    monkeypatch.setattr(sync_cmd, "random_sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sync_cmd, "_iter_list", streaming_iter)
+    monkeypatch.setattr(sync_cmd, "ArticleFetcher", _SuccessFetcher)
+
+    stats, code = asyncio.run(
+        sync_cmd._sync_one(
+            api=object(),
+            account={"biz_id": "biz1", "faker_id": "fake1", "name": "Account A"},
+            cfg=GatherConfig(max_pages=2),
+            mode="web",
+            full=False,
+            since_ts=None,
+            out_root=tmp_home / "articles",
+            no_browser=False,
+        )
+    )
+
+    # Frequency control mid-iteration → exit code 2, page-1 articles committed anyway.
+    assert code == 2
+    assert stats.new_articles == 3
+    assert any("200013" in e or "frequency" in e for e in stats.errors)
+    with db_store.connect() as conn:
+        for it in items_page_1:
+            row = db_store.get_article(conn, db_store.article_id_for_url(it["link"]))
+            assert row is not None
+            assert row["fetch_status"] == "success"
+
+
+def test_sync_per_article_commit_survives_mid_loop_crash(
+    tmp_home: Path, monkeypatch: Any
+) -> None:
+    """A crash on article N must not roll back articles 1..N-1's DB rows."""
+    items = [_item(url=f"https://mp.weixin.qq.com/s/x-{i}") for i in range(3)]
+
+    class FetcherFailsOnThird:
+        n = 0
+
+        async def start(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+        async def fetch(self, url: str) -> dict[str, Any]:
+            FetcherFailsOnThird.n += 1
+            if FetcherFailsOnThird.n == 3:
+                raise RuntimeError("playwright crashed")
+            return {
+                "content": "<p>body</p>",
+                "fetch_status": "success",
+                "article_type": 0,
+                "author": "Author",
+                "mp_info": {"mp_name": "Account A"},
+            }
+
+    monkeypatch.setattr(sync_cmd, "random_sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sync_cmd, "_iter_list", lambda *a, **kw: iter(items))
+    monkeypatch.setattr(sync_cmd, "ArticleFetcher", FetcherFailsOnThird)
+
+    stats, code = asyncio.run(
+        sync_cmd._sync_one(
+            api=object(),
+            account={"biz_id": "biz1", "faker_id": "fake1", "name": "Account A"},
+            cfg=GatherConfig(max_pages=1),
+            mode="web",
+            full=False,
+            since_ts=None,
+            out_root=tmp_home / "articles",
+            no_browser=False,
+        )
+    )
+
+    # Generic exception on article 3 → code 2.
+    assert code == 2
+    # First two articles committed despite the rollback on the third.
+    assert stats.new_articles == 2
+    with db_store.connect() as conn:
+        for i, it in enumerate(items[:2]):
+            row = db_store.get_article(conn, db_store.article_id_for_url(it["link"]))
+            assert row is not None, f"article {i} missing from DB"
+
+
+def test_sync_cmd_exits_2_on_account_failure(tmp_home: Path, monkeypatch: Any) -> None:
+    """sync_cmd must propagate per-account exit codes — failed sync → exit 2, not 0."""
+    account = {"biz_id": "biz1", "faker_id": "fake1", "name": "Account A"}
+    monkeypatch.setattr(sync_cmd.accounts_store, "find", lambda _q: account)
+    monkeypatch.setattr(sync_cmd, "make_api_from_token", lambda: object())
+
+    async def failing_sync(**kwargs: Any) -> tuple[Any, int]:
+        from hive_mp_cli.wechat.gather.base import GatherStats
+        s = GatherStats()
+        s.errors.append("ret=200013 frequency control")
+        return s, 2
+
+    monkeypatch.setattr(sync_cmd, "_sync_one", failing_sync)
+    monkeypatch.setattr(sync_cmd, "random_sleep", lambda *args, **kwargs: None)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sync", "Account A", "--json"])
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert "Account A" in payload
+    assert "200013" in payload["Account A"]["errors"][0]
+    assert payload["Account A"]["exit_code"] == 2
 
 
 def test_sync_marks_dead_after_max_attempts(tmp_home: Path, monkeypatch: Any) -> None:
@@ -307,7 +429,7 @@ def test_sync_marks_dead_after_max_attempts(tmp_home: Path, monkeypatch: Any) ->
         )
 
     # Next sync should skip without calling fetcher.
-    stats = asyncio.run(
+    stats, _code = asyncio.run(
         sync_cmd._sync_one(
             api=object(),
             account=account,
@@ -324,7 +446,7 @@ def test_sync_marks_dead_after_max_attempts(tmp_home: Path, monkeypatch: Any) ->
     assert stats.failed_articles == 0
 
     # And repair should not pick it up either.
-    repair_stats = asyncio.run(
+    repair_stats, _ = asyncio.run(
         sync_cmd._repair_one(
             account=account,
             cfg=GatherConfig(max_pages=1),

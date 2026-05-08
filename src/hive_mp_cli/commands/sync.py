@@ -103,17 +103,18 @@ def sync_cmd(
             _emit_error(json_output, "login_expired", str(exc), code=3)
 
     cfg = GatherConfig(max_pages=max_pages)
-    aggregate: dict[str, GatherStats] = {}
+    aggregate: dict[str, tuple[GatherStats, int]] = {}
+    final_code = 0
     for acc in targets:
         if not json_output:
             verb = "repairing" if repair else "syncing"
             console.print(f"[bold cyan]→ {verb}[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
         try:
             if repair:
-                stats = asyncio.run(_repair_one(account=acc, cfg=cfg, out_root=out_root))
+                stats, code = asyncio.run(_repair_one(account=acc, cfg=cfg, out_root=out_root))
             else:
                 assert api is not None
-                stats = asyncio.run(
+                stats, code = asyncio.run(
                     _sync_one(
                         api=api,
                         account=acc,
@@ -127,7 +128,8 @@ def sync_cmd(
                 )
         except InvalidSessionError as exc:
             _emit_error(json_output, "login_expired", str(exc), code=3)
-        aggregate[acc.get("name", acc.get("biz_id", "?"))] = stats
+        aggregate[acc.get("name", acc.get("biz_id", "?"))] = (stats, code)
+        final_code = max(final_code, code)
         if not json_output:
             console.print(
                 f"  [green]done[/green] new={stats.new_articles} "
@@ -145,10 +147,14 @@ def sync_cmd(
                 "failed": s.failed_articles,
                 "skipped_dead": s.skipped_dead,
                 "errors": s.errors,
+                "exit_code": code,
             }
-            for name, s in aggregate.items()
+            for name, (s, code) in aggregate.items()
         }
         typer.echo(_json.dumps(out_payload, ensure_ascii=False, indent=2))
+
+    if final_code != 0:
+        raise typer.Exit(code=final_code)
 
 
 # --------------------------------------------------------------------- core
@@ -161,7 +167,12 @@ async def _sync_one(
     since_ts: int | None,
     out_root: Any,
     no_browser: bool,
-) -> GatherStats:
+) -> tuple[GatherStats, int]:
+    """Sync one account. Returns ``(stats, exit_code)``.
+
+    ``exit_code``: 0 ok / 2 frequency-control or transient error / 3 login expired.
+    Login expired is signalled by re-raising ``InvalidSessionError`` for the caller.
+    """
     stats = GatherStats()
     biz_id = account.get("biz_id") or ""
     faker_id = account.get("faker_id") or biz_id
@@ -169,10 +180,12 @@ async def _sync_one(
 
     if not faker_id:
         stats.errors.append("missing faker_id")
-        return stats
+        return stats, 1
 
     fetcher: ArticleFetcher | None = None
     sync_id: int | None = None
+    exit_code = 0
+    processed = 0
     try:
         with db_store.connect() as conn:
             sync_id = db_store.start_sync(conn, biz_id=biz_id, faker_id=faker_id)
@@ -181,10 +194,28 @@ async def _sync_one(
                 fetcher = ArticleFetcher()
                 await fetcher.start()
 
-            entries = list(_iter_list(api, faker_id, cfg, mode))
-            stats.pages_fetched = (len(entries) + cfg.page_size - 1) // max(1, cfg.page_size)
+            iterator = _iter_list(api, faker_id, cfg, mode)
+            while True:
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    break
+                except FrequencyControlError as exc:
+                    # Page N tripped frequency control. Earlier pages are already
+                    # committed (see per-article commit below) — we just stop here.
+                    stats.errors.append(str(exc))
+                    exit_code = max(exit_code, 2)
+                    logger.warning("frequency control during list iteration: %s", exc)
+                    break
+                except InvalidSessionError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    stats.errors.append(repr(exc))
+                    exit_code = max(exit_code, 2)
+                    logger.exception("list iteration failed for %s", name)
+                    break
 
-            for item in entries:
+                processed += 1
                 url = item.get("link") or ""
                 title = item.get("title") or ""
                 publish_time = int(item.get("update_time") or item.get("create_time") or 0)
@@ -273,6 +304,9 @@ async def _sync_one(
                     "has_content": 1 if body_html else 0,
                 }
                 inserted = db_store.upsert_article(conn, row)
+                # Per-article commit: a later failure in this loop must not roll
+                # back articles whose markdown is already on disk.
+                conn.commit()
                 if inserted:
                     stats.new_articles += 1
                 elif body_html and prev is not None and int(prev.get("has_content") or 0) == 0:
@@ -283,35 +317,44 @@ async def _sync_one(
 
                 random_sleep(cfg.post_article_min, cfg.post_article_max, label="post-article")
 
+            stats.pages_fetched = (processed + cfg.page_size - 1) // max(1, cfg.page_size)
             db_store.finish_sync(conn, sync_id, stats.new_articles)
             sync_id = None
 
         accounts_store.update_last_synced(biz_id or name)
     except FrequencyControlError as exc:
+        # Reachable only if frequency control is raised outside of next() —
+        # e.g. mid-article fetcher call. The inside-loop case is handled above.
         stats.errors.append(str(exc))
         _finish_sync_after_error(sync_id, stats, str(exc))
         logger.warning("frequency control hit: %s", exc)
+        exit_code = max(exit_code, 2)
     except InvalidSessionError:
         # Let the caller exit with code 3 — token is bad and won't recover this run
         _finish_sync_after_error(sync_id, stats, "login expired")
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         stats.errors.append(repr(exc))
         _finish_sync_after_error(sync_id, stats, repr(exc))
         logger.exception("sync_one failed for %s", name)
+        exit_code = max(exit_code, 2)
     finally:
         if fetcher is not None:
             await fetcher.close()
 
-    return stats
+    return stats, exit_code
 
 
 async def _repair_one(
     account: dict[str, Any],
     cfg: GatherConfig,
     out_root: Path,
-) -> GatherStats:
-    """Refetch bodies for articles where ``has_content=0`` and attempts < cap."""
+) -> tuple[GatherStats, int]:
+    """Refetch bodies for articles where ``has_content=0`` and attempts < cap.
+
+    Returns ``(stats, exit_code)``. ``exit_code`` is 0 on full success, 2 if any
+    article fetch failed catastrophically (Playwright crash, etc.).
+    """
     stats = GatherStats()
     biz_id = account.get("biz_id") or ""
     faker_id = account.get("faker_id") or biz_id
@@ -319,16 +362,17 @@ async def _repair_one(
 
     if not biz_id:
         stats.errors.append("missing biz_id")
-        return stats
+        return stats, 1
 
     fetcher: ArticleFetcher | None = None
     sync_id: int | None = None
+    exit_code = 0
     try:
         with db_store.connect() as conn:
             candidates = db_store.list_repair_candidates(conn, biz_id=biz_id)
             if not candidates:
                 logger.info("repair: nothing to do for %s", name)
-                return stats
+                return stats, 0
 
             sync_id = db_store.start_sync(conn, biz_id=biz_id, faker_id=faker_id)
             fetcher = ArticleFetcher()
@@ -387,6 +431,9 @@ async def _repair_one(
                     "has_content": 1 if body_html else 0,
                 }
                 db_store.upsert_article(conn, row)
+                # Per-article commit: on crash mid-loop, prior repaired rows stick
+                # rather than getting rolled back together with the in-flight one.
+                conn.commit()
                 if body_html:
                     stats.repaired_articles += 1
 
@@ -394,15 +441,16 @@ async def _repair_one(
 
             db_store.finish_sync(conn, sync_id, stats.repaired_articles)
             sync_id = None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         stats.errors.append(repr(exc))
         _finish_sync_after_error(sync_id, stats, repr(exc))
         logger.exception("repair_one failed for %s", name)
+        exit_code = max(exit_code, 2)
     finally:
         if fetcher is not None:
             await fetcher.close()
 
-    return stats
+    return stats, exit_code
 
 
 def _iter_list(api: WeChatAPI, faker_id: str, cfg: GatherConfig, mode: str):

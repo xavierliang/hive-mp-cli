@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json as _json
 import time
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -16,6 +17,22 @@ from hive_mp_cli.wechat.gather.base import InvalidSessionError, make_api_from_to
 
 app = typer.Typer(help="Manage subscribed WeChat public accounts.", no_args_is_help=True)
 console = Console()
+
+
+def _emit_error(
+    json_output: bool,
+    error: str,
+    message: str,
+    code: int,
+    **extra: Any,
+) -> NoReturn:
+    """Emit a structured error and exit. JSON path mirrors sync.py:_emit_error."""
+    if json_output:
+        payload = {"ok": False, "error": error, "message": message, **extra}
+        typer.echo(_json.dumps(payload, ensure_ascii=False))
+    else:
+        console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code=code)
 
 
 def _resolve_account(api: WeChatAPI, name_or_biz: str) -> dict | None:
@@ -54,24 +71,30 @@ def add_cmd(
     try:
         api = make_api_from_token()
     except InvalidSessionError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=3)
+        _emit_error(json_output, "login_expired", str(exc), code=3)
 
     try:
         candidate = _resolve_account(api, name_or_biz)
     except InvalidSessionError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=3)
+        _emit_error(json_output, "login_expired", str(exc), code=3)
     except Exception as exc:
-        console.print(f"[red]Search failed:[/red] {exc}")
-        raise typer.Exit(code=2)
+        _emit_error(json_output, "search_failed", f"Search failed: {exc}", code=2)
 
     if not candidate:
-        console.print(f"[yellow]No public account matched '{name_or_biz}'.[/yellow]")
-        raise typer.Exit(code=1)
+        _emit_error(
+            json_output,
+            "not_found",
+            f"No public account matched '{name_or_biz}'.",
+            code=1,
+            name_or_biz=name_or_biz,
+        )
     if not candidate["biz_id"]:
-        console.print("[red]Search hit had no biz_id; cannot add.[/red]")
-        raise typer.Exit(code=2)
+        _emit_error(
+            json_output,
+            "missing_biz_id",
+            "Search hit had no biz_id; cannot add.",
+            code=2,
+        )
 
     saved = accounts_store.add(candidate)
     if json_output:
@@ -130,8 +153,13 @@ def info_cmd(
     """Show metadata for a subscribed account."""
     acc = accounts_store.find(name_or_biz)
     if not acc:
-        console.print(f"[yellow]Not found:[/yellow] {name_or_biz}")
-        raise typer.Exit(code=1)
+        _emit_error(
+            json_output,
+            "not_found",
+            f"Not found: {name_or_biz}",
+            code=1,
+            name_or_biz=name_or_biz,
+        )
     if json_output:
         typer.echo(_json.dumps(acc, ensure_ascii=False, indent=2))
     else:
