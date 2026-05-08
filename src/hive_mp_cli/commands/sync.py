@@ -41,6 +41,11 @@ def sync_cmd(
     name_or_biz: str | None = typer.Argument(None, help="Single account to sync. Omit for all."),
     mode: str = typer.Option("web", "--mode", help="api | web (default web — browser fetches body)."),
     full: bool = typer.Option(False, "--full", help="Disable dedup; refetch existing articles."),
+    repair: bool = typer.Option(
+        False,
+        "--repair",
+        help="Skip list fetch; only retry articles whose body is missing (has_content=0).",
+    ),
     since: str | None = typer.Option(None, "--since", help="ISO date (YYYY-MM-DD) lower bound."),
     max_pages: int = typer.Option(2, "--pages", help="Max list pages per account."),
     out: str | None = typer.Option(None, "--out", help="Override articles output dir."),
@@ -64,6 +69,14 @@ def sync_cmd(
             mode=mode,
         )
 
+    if repair and no_browser:
+        _emit_error(
+            json_output,
+            "incompatible_flags",
+            "--repair needs the browser; cannot combine with --no-browser.",
+            code=1,
+        )
+
     out_root = Path(out).expanduser().resolve() if out else PATHS.articles_dir
     out_root.mkdir(parents=True, exist_ok=True)
 
@@ -80,36 +93,46 @@ def sync_cmd(
 
     since_ts = _parse_since(since) if since else None
 
-    try:
-        api = make_api_from_token()
-    except InvalidSessionError as exc:
-        _emit_error(json_output, "login_expired", str(exc), code=3)
+    api: WeChatAPI | None = None
+    if not repair:
+        # Repair fetches public article URLs via Playwright; the WeChat API token
+        # is only needed for list iteration, so we skip the check.
+        try:
+            api = make_api_from_token()
+        except InvalidSessionError as exc:
+            _emit_error(json_output, "login_expired", str(exc), code=3)
 
     cfg = GatherConfig(max_pages=max_pages)
     aggregate: dict[str, GatherStats] = {}
     for acc in targets:
         if not json_output:
-            console.print(f"[bold cyan]→ syncing[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
+            verb = "repairing" if repair else "syncing"
+            console.print(f"[bold cyan]→ {verb}[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
         try:
-            stats = asyncio.run(
-                _sync_one(
-                    api=api,
-                    account=acc,
-                    cfg=cfg,
-                    mode=mode,
-                    full=full,
-                    since_ts=since_ts,
-                    out_root=out_root,
-                    no_browser=no_browser,
+            if repair:
+                stats = asyncio.run(_repair_one(account=acc, cfg=cfg, out_root=out_root))
+            else:
+                assert api is not None
+                stats = asyncio.run(
+                    _sync_one(
+                        api=api,
+                        account=acc,
+                        cfg=cfg,
+                        mode=mode,
+                        full=full,
+                        since_ts=since_ts,
+                        out_root=out_root,
+                        no_browser=no_browser,
+                    )
                 )
-            )
         except InvalidSessionError as exc:
             _emit_error(json_output, "login_expired", str(exc), code=3)
         aggregate[acc.get("name", acc.get("biz_id", "?"))] = stats
         if not json_output:
             console.print(
                 f"  [green]done[/green] new={stats.new_articles} "
-                f"existing={stats.existing_articles} failed={stats.failed_articles}"
+                f"existing={stats.existing_articles} repaired={stats.repaired_articles} "
+                f"failed={stats.failed_articles} skipped_dead={stats.skipped_dead}"
             )
         random_sleep(cfg.post_account_min, cfg.post_account_max, label="between accounts")
 
@@ -118,7 +141,9 @@ def sync_cmd(
             name: {
                 "new": s.new_articles,
                 "existing": s.existing_articles,
+                "repaired": s.repaired_articles,
                 "failed": s.failed_articles,
+                "skipped_dead": s.skipped_dead,
                 "errors": s.errors,
             }
             for name, s in aggregate.items()
@@ -169,8 +194,16 @@ async def _sync_one(
                     continue
 
                 article_id = db_store.article_id_for_url(url)
-                if not full and db_store.has_article(conn, article_id):
-                    stats.existing_articles += 1
+                prev = db_store.get_article_status(conn, article_id) if not full else None
+                if prev is not None and not db_store.should_retry(prev):
+                    if (
+                        int(prev.get("fetch_attempts") or 0) >= db_store.MAX_FETCH_ATTEMPTS
+                        and int(prev.get("has_content") or 0) == 0
+                        and prev.get("fetch_status") != "deleted"
+                    ):
+                        stats.skipped_dead += 1
+                    else:
+                        stats.existing_articles += 1
                     continue
 
                 random_sleep(cfg.pre_article_min, cfg.pre_article_max, label="pre-article")
@@ -237,10 +270,14 @@ async def _sync_one(
                     "summary": summary,
                     "article_type": article_type,
                     "fetch_status": fetch_status,
+                    "has_content": 1 if body_html else 0,
                 }
                 inserted = db_store.upsert_article(conn, row)
                 if inserted:
                     stats.new_articles += 1
+                elif body_html and prev is not None and int(prev.get("has_content") or 0) == 0:
+                    # Existing row whose body just got filled in → that's a repair.
+                    stats.repaired_articles += 1
                 else:
                     stats.existing_articles += 1
 
@@ -262,6 +299,105 @@ async def _sync_one(
         stats.errors.append(repr(exc))
         _finish_sync_after_error(sync_id, stats, repr(exc))
         logger.exception("sync_one failed for %s", name)
+    finally:
+        if fetcher is not None:
+            await fetcher.close()
+
+    return stats
+
+
+async def _repair_one(
+    account: dict[str, Any],
+    cfg: GatherConfig,
+    out_root: Path,
+) -> GatherStats:
+    """Refetch bodies for articles where ``has_content=0`` and attempts < cap."""
+    stats = GatherStats()
+    biz_id = account.get("biz_id") or ""
+    faker_id = account.get("faker_id") or biz_id
+    name = account.get("name") or biz_id
+
+    if not biz_id:
+        stats.errors.append("missing biz_id")
+        return stats
+
+    fetcher: ArticleFetcher | None = None
+    sync_id: int | None = None
+    try:
+        with db_store.connect() as conn:
+            candidates = db_store.list_repair_candidates(conn, biz_id=biz_id)
+            if not candidates:
+                logger.info("repair: nothing to do for %s", name)
+                return stats
+
+            sync_id = db_store.start_sync(conn, biz_id=biz_id, faker_id=faker_id)
+            fetcher = ArticleFetcher()
+            await fetcher.start()
+
+            for cand in candidates:
+                url = cand.get("url") or ""
+                if not url:
+                    continue
+                random_sleep(cfg.pre_article_min, cfg.pre_article_max, label="pre-article")
+
+                fetched = await fetcher.fetch(url)
+                fetch_status = fetched.get("fetch_status") or "success"
+                body_html = fetched.get("content") or ""
+                if fetch_status in _BODY_FAILURE_STATUSES:
+                    body_html = ""
+                elif fetch_status == "success" and not body_html:
+                    fetch_status = "partial"
+                article_type = fetched.get("article_type") or 0
+                title = fetched.get("title") or cand.get("title") or ""
+                publish_time = int(fetched.get("publish_time") or cand.get("publish_time") or 0)
+
+                article_doc = {
+                    "id": cand["id"],
+                    "url": url,
+                    "title": title,
+                    "author": fetched.get("author") or cand.get("author") or "",
+                    "publish_time": publish_time,
+                    "content": body_html,
+                    "mp_info": fetched.get("mp_info") or {"mp_name": name},
+                }
+
+                local_path = cand.get("local_path") or ""
+                if body_html:
+                    md_text = article_to_markdown(article_doc)
+                    md_path = files_store.write_article(out_root, name, publish_time, title, md_text)
+                    local_path = _stored_local_path(md_path, out_root)
+
+                summary = extract_excerpt(body_html) or cand.get("summary") or ""
+                if fetch_status in _FAILED_STATUSES:
+                    stats.failed_articles += 1
+
+                row = {
+                    "id": cand["id"],
+                    "biz_id": biz_id,
+                    "faker_id": cand.get("faker_id") or faker_id,
+                    "url": url,
+                    "title": title,
+                    "author": article_doc.get("author") or "",
+                    "publish_time": publish_time or None,
+                    "fetched_at": int(time.time()),
+                    "local_path": local_path,
+                    "summary": summary,
+                    "article_type": article_type,
+                    "fetch_status": fetch_status,
+                    "has_content": 1 if body_html else 0,
+                }
+                db_store.upsert_article(conn, row)
+                if body_html:
+                    stats.repaired_articles += 1
+
+                random_sleep(cfg.post_article_min, cfg.post_article_max, label="post-article")
+
+            db_store.finish_sync(conn, sync_id, stats.repaired_articles)
+            sync_id = None
+    except Exception as exc:
+        stats.errors.append(repr(exc))
+        _finish_sync_after_error(sync_id, stats, repr(exc))
+        logger.exception("repair_one failed for %s", name)
     finally:
         if fetcher is not None:
             await fetcher.close()

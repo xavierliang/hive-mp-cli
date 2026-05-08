@@ -17,6 +17,8 @@ from typing import Any
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 
+from hive_mp_cli.wechat.filters import apply_filter_rules
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,10 +50,16 @@ def fix_images(content: str) -> str:
         return content
 
 
-def html_to_markdown(content: str) -> str:
-    """Convert WeChat article HTML to Markdown using the markdownify pipeline."""
+def html_to_markdown(content: str, account_name: str | None = None) -> str:
+    """Convert WeChat article HTML to Markdown using the markdownify pipeline.
+
+    User-configured filter rules (``~/.hive-mp/filter_rules.yaml``) are applied first
+    so noise like ``<section class="reward_area_personal_new">`` never reaches the
+    markdown output.
+    """
     if not content:
         return ""
+    content = apply_filter_rules(content, account_name)
     try:
         soup = BeautifulSoup(content, "html.parser")
         for tag in soup.find_all(["span", "font", "div", "strong", "b"]):
@@ -102,7 +110,7 @@ def article_to_markdown(article: dict[str, Any]) -> str:
     publish_time = article.get("publish_time", 0)
     url = article.get("url", "")
     body_html = article.get("content") or ""
-    body_md = html_to_markdown(body_html)
+    body_md = html_to_markdown(body_html, account_name=mp_name or None)
 
     if publish_time:
         import time

@@ -20,6 +20,8 @@ service was stripped, only the WeChat HTTP API client + Playwright body fetcher
   - **web mode** (default): browser fetches article body, more robust against
     WeChat's risk-control screen
   - **api mode**: pure HTTP, faster, but article body may be blocked
+  - `--repair`: skip the list pull, only retry articles whose body never made
+    it (`has_content=0`); safe to run even after the login token has expired
 - `hive-mp article list/read/url/search` — query archive
 - All commands accept `--json` for agent consumption
 - Standard exit codes: 0 ok / 1 user error / 2 network error / 3 login expired
@@ -52,6 +54,7 @@ hive-mp article list "阮一峰的网络日志" --json
 ~/.hive-mp/                          (override with HIVE_MP_HOME=...)
 ├── config.json
 ├── accounts.json                    # subscribed accounts (hand-editable)
+├── filter_rules.yaml                # optional HTML noise filter (see below)
 ├── token.json                       # cookie + token (chmod 600)
 ├── articles.db                      # SQLite: articles + sync_log
 ├── articles/<account>/              # markdown output
@@ -68,6 +71,8 @@ SQLite schema (`articles` table):
 | `url` | original `mp.weixin.qq.com/s/...` URL |
 | `local_path` | relative to `~/.hive-mp/articles/` |
 | `fetch_status` | `success` / `partial` / `blocked` / `deleted` / `metadata-only` |
+| `has_content` | `1` if the body was fetched and a markdown file written, else `0` |
+| `fetch_attempts` | retry counter; capped at 3 — past that the URL is treated as dead |
 | `publish_time` | unix timestamp |
 
 ## Architecture
@@ -120,11 +125,53 @@ account+IP, and the sleeps mimic human pacing. For agent-driven use cases
 hive-mp sync <name> --mode web         # default: list via HTTP, body via browser
 hive-mp sync <name> --mode api         # all HTTP, faster, body may be blocked
 hive-mp sync <name> --no-browser       # skip body, only catalog metadata
+hive-mp sync <name> --repair           # only retry articles whose body never landed
 ```
 
 The browser launches **once per `sync` invocation** and is reused across all
 articles — this is the major change vs the upstream pattern, which started a
 fresh browser per article (~2s × N overhead).
+
+## Repair partial fetches
+
+A regular `sync` skips any URL it has seen — by `has_content`, not just by
+existence. The first time the body fetch fails (anti-crawler block, transient
+network error, partial DOM render), the row is written with `has_content=0`
+and `fetch_attempts=1`. Run `hive-mp sync <name> --repair` to refetch only
+those rows; after `MAX_FETCH_ATTEMPTS=3` tries it gives up and the article is
+counted as `skipped_dead`. `--repair` does **not** call the WeChat API, so it
+keeps working after your login token has expired:
+
+```bash
+hive-mp sync <name> --repair --json
+# → {"<name>": {"new":0, "existing":0, "repaired":7, "failed":1, "skipped_dead":2, "errors":[]}}
+```
+
+## Content filter rules
+
+WeChat articles often carry guide-to-follow / share / reward sections that
+clutter the markdown output. Drop a YAML file at
+`~/.hive-mp/filter_rules.yaml` and the matching elements are stripped before
+`html → markdown` conversion. The file is optional — if absent, no filtering
+is applied:
+
+```yaml
+global:
+  remove_selectors:
+    - ".reward_area_personal_new"      # CSS selector via BeautifulSoup .select()
+  remove_ids: []                       # match by element id
+  remove_classes:
+    - "rich_media_tool"                # match by class name
+  remove_regex: []                     # re.sub(pat, '', html, flags=DOTALL)
+
+accounts:
+  "公众号A":                            # name from accounts.json
+    remove_selectors:
+      - "#js_profile_qrcode"
+```
+
+Account-scoped rules merge **with** (not replace) the global block. Edits to
+the file take effect on the next `sync` run; no restart needed.
 
 ## Development
 

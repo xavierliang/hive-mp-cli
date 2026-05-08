@@ -59,6 +59,8 @@ class GatherStats:
     new_articles: int = 0
     existing_articles: int = 0
     failed_articles: int = 0
+    repaired_articles: int = 0
+    skipped_dead: int = 0
     pages_fetched: int = 0
     errors: list[str] = field(default_factory=list)
 

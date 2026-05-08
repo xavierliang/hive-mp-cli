@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -7,7 +8,14 @@ from hive_mp_cli.storage import db as db_store
 from hive_mp_cli.storage import files as files_store
 
 
-def _row(url: str, biz_id: str = "biz1", title: str = "t") -> dict:
+def _row(
+    url: str,
+    biz_id: str = "biz1",
+    title: str = "t",
+    fetch_status: str = "success",
+    has_content: int = 1,
+    local_path: str = "",
+) -> dict:
     return {
         "id": db_store.article_id_for_url(url),
         "biz_id": biz_id,
@@ -17,10 +25,11 @@ def _row(url: str, biz_id: str = "biz1", title: str = "t") -> dict:
         "author": "",
         "publish_time": int(time.time()),
         "fetched_at": int(time.time()),
-        "local_path": "",
+        "local_path": local_path,
         "summary": "",
         "article_type": 0,
-        "fetch_status": "success",
+        "fetch_status": fetch_status,
+        "has_content": has_content,
     }
 
 
@@ -75,6 +84,129 @@ def test_search(tmp_home: Path) -> None:
         rows = db_store.search_articles(conn, "Python")
     assert len(rows) == 1
     assert "Python" in rows[0]["title"]
+
+
+def test_migrate_old_schema_adds_has_content_and_attempts(tmp_home: Path) -> None:
+    """A pre-existing DB without the new columns should be migrated transparently."""
+    from hive_mp_cli.config import PATHS
+
+    # Hand-build the old schema (no has_content, no fetch_attempts).
+    db_path = PATHS.db_file
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE articles (
+            id TEXT PRIMARY KEY,
+            biz_id TEXT NOT NULL,
+            faker_id TEXT,
+            url TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            author TEXT,
+            publish_time INTEGER,
+            fetched_at INTEGER,
+            local_path TEXT,
+            summary TEXT,
+            article_type INTEGER,
+            fetch_status TEXT
+        );
+        INSERT INTO articles (id, biz_id, url, title, local_path, fetch_status)
+        VALUES ('id-success', 'A', 'https://x.com/a', 'T', 'A/file.md', 'success'),
+               ('id-pending', 'A', 'https://x.com/b', 'T', '', 'metadata-only');
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    # connect() should ALTER TABLE on demand.
+    with db_store.connect() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(articles)").fetchall()}
+        assert "has_content" in cols
+        assert "fetch_attempts" in cols
+        success = db_store.get_article_status(conn, "id-success")
+        pending = db_store.get_article_status(conn, "id-pending")
+    # Backfill: rows with a real local_path are treated as already-fetched.
+    assert success is not None and success["has_content"] == 1
+    assert pending is not None and pending["has_content"] == 0
+
+
+def test_get_article_status_returns_none_when_absent(tmp_home: Path) -> None:
+    with db_store.connect() as conn:
+        assert db_store.get_article_status(conn, "nope") is None
+
+
+def test_get_article_status_after_upsert(tmp_home: Path) -> None:
+    with db_store.connect() as conn:
+        db_store.upsert_article(
+            conn,
+            _row("https://x.com/1", fetch_status="success", has_content=1, local_path="A/x.md"),
+        )
+        status = db_store.get_article_status(conn, db_store.article_id_for_url("https://x.com/1"))
+    assert status is not None
+    assert status["has_content"] == 1
+    assert status["fetch_status"] == "success"
+    assert status["fetch_attempts"] == 1
+
+
+def test_upsert_increments_fetch_attempts(tmp_home: Path) -> None:
+    url = "https://x.com/1"
+    with db_store.connect() as conn:
+        db_store.upsert_article(conn, _row(url, fetch_status="blocked", has_content=0))
+        db_store.upsert_article(conn, _row(url, fetch_status="blocked", has_content=0))
+        db_store.upsert_article(conn, _row(url, fetch_status="blocked", has_content=0))
+        status = db_store.get_article_status(conn, db_store.article_id_for_url(url))
+    assert status is not None
+    assert status["fetch_attempts"] == 3
+
+
+def test_upsert_preserves_has_content_after_repair_then_idle(tmp_home: Path) -> None:
+    """Once has_content=1, a later metadata refresh must not flip it back to 0."""
+    url = "https://x.com/1"
+    with db_store.connect() as conn:
+        db_store.upsert_article(
+            conn, _row(url, fetch_status="success", has_content=1, local_path="A/x.md")
+        )
+        db_store.upsert_article(
+            conn, _row(url, fetch_status="metadata-only", has_content=0, local_path="")
+        )
+        status = db_store.get_article_status(conn, db_store.article_id_for_url(url))
+    assert status is not None
+    assert status["has_content"] == 1
+    assert status["fetch_status"] == "success"  # terminal status not overwritten
+
+
+def test_should_retry_matrix() -> None:
+    assert db_store.should_retry(None) is True
+    assert db_store.should_retry({"has_content": 1, "fetch_status": "success", "fetch_attempts": 1}) is False
+    assert db_store.should_retry({"has_content": 0, "fetch_status": "deleted", "fetch_attempts": 1}) is False
+    assert db_store.should_retry({"has_content": 0, "fetch_status": "blocked", "fetch_attempts": db_store.MAX_FETCH_ATTEMPTS}) is False
+    assert db_store.should_retry({"has_content": 0, "fetch_status": "blocked", "fetch_attempts": 1}) is True
+    assert db_store.should_retry({"has_content": 0, "fetch_status": "metadata-only", "fetch_attempts": 0}) is True
+
+
+def test_list_repair_candidates_filters_terminal_and_capped(tmp_home: Path) -> None:
+    with db_store.connect() as conn:
+        # Already succeeded — never a candidate.
+        db_store.upsert_article(
+            conn, _row("https://x.com/ok", fetch_status="success", has_content=1, local_path="A/ok.md")
+        )
+        # Deleted — terminal.
+        db_store.upsert_article(
+            conn, _row("https://x.com/del", fetch_status="deleted", has_content=0)
+        )
+        # Capped: 3 attempts of blocked.
+        for _ in range(3):
+            db_store.upsert_article(
+                conn, _row("https://x.com/cap", fetch_status="blocked", has_content=0)
+            )
+        # Live candidate: blocked once, can still retry.
+        db_store.upsert_article(
+            conn, _row("https://x.com/live", fetch_status="blocked", has_content=0)
+        )
+
+        cands = db_store.list_repair_candidates(conn, biz_id="biz1")
+    urls = {c["url"] for c in cands}
+    assert urls == {"https://x.com/live"}
 
 
 def test_sync_log_round_trip(tmp_home: Path) -> None:

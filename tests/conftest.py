@@ -28,4 +28,9 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(article_cmd, "PATHS", new_paths)
     monkeypatch.setattr(sync_cmd, "PATHS", new_paths)
 
+    # filters.py reads PATHS.filter_rules_file and caches loads via lru_cache.
+    from hive_mp_cli.wechat import filters as filters_mod
+    monkeypatch.setattr(filters_mod, "PATHS", new_paths)
+    filters_mod.reset_cache()
+
     return tmp_path

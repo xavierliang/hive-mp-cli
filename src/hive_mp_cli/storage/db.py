@@ -1,4 +1,9 @@
-"""SQLite store for articles + sync_log. WAL mode for safety."""
+"""SQLite store for articles + sync_log. WAL mode for safety.
+
+Schema evolution: ``has_content`` and ``fetch_attempts`` columns power incremental
+repair of articles whose body fetch failed. Old DBs are migrated transparently
+on connect via ``PRAGMA table_info`` + ``ALTER TABLE``.
+"""
 from __future__ import annotations
 
 import contextlib
@@ -11,24 +16,30 @@ from typing import Any
 
 from hive_mp_cli.config import PATHS
 
+MAX_FETCH_ATTEMPTS = 3
+"""Per-article retry cap. Past this we treat the URL as dead."""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS articles (
-    id            TEXT PRIMARY KEY,
-    biz_id        TEXT NOT NULL,
-    faker_id      TEXT,
-    url           TEXT UNIQUE NOT NULL,
-    title         TEXT NOT NULL,
-    author        TEXT,
-    publish_time  INTEGER,
-    fetched_at    INTEGER,
-    local_path    TEXT,
-    summary       TEXT,
-    article_type  INTEGER,
-    fetch_status  TEXT
+    id              TEXT PRIMARY KEY,
+    biz_id          TEXT NOT NULL,
+    faker_id        TEXT,
+    url             TEXT UNIQUE NOT NULL,
+    title           TEXT NOT NULL,
+    author          TEXT,
+    publish_time    INTEGER,
+    fetched_at      INTEGER,
+    local_path      TEXT,
+    summary         TEXT,
+    article_type    INTEGER,
+    fetch_status    TEXT,
+    has_content     INTEGER NOT NULL DEFAULT 0,
+    fetch_attempts  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_articles_biz ON articles(biz_id, publish_time DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_faker ON articles(faker_id, publish_time DESC);
+-- idx_articles_pending references columns added by _migrate(); created there.
 
 CREATE TABLE IF NOT EXISTS sync_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +57,24 @@ def article_id_for_url(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add has_content / fetch_attempts to old DBs that pre-date the repair feature."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(articles)").fetchall()}
+    if "has_content" not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN has_content INTEGER NOT NULL DEFAULT 0")
+        # Backfill: any row with a real local_path is a successful fetch.
+        conn.execute(
+            "UPDATE articles SET has_content = 1 "
+            "WHERE local_path IS NOT NULL AND local_path != ''"
+        )
+    if "fetch_attempts" not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN fetch_attempts INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE articles SET fetch_attempts = 1")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_articles_pending ON articles(has_content, fetch_attempts)"
+    )
+
+
 @contextlib.contextmanager
 def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     PATHS.home.mkdir(parents=True, exist_ok=True)
@@ -56,6 +85,7 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         try:
             yield conn
             conn.commit()
@@ -67,14 +97,24 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def upsert_article(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
-    """Insert if new. Returns True if new row was inserted."""
-    existed = has_article(conn, row["id"])
+    """Insert if new. Returns True if a new row was inserted.
+
+    On conflict the merge is conservative: terminal states (success/deleted,
+    populated local_path, has_content=1) are preserved so a metadata-only
+    refresh can never wipe a successful prior fetch. ``fetch_attempts`` always
+    increments by 1 — every call counts as a try.
+    """
+    payload = dict(row)
+    payload.setdefault("has_content", 0)
+    existed = has_article(conn, payload["id"])
     conn.execute(
         """
         INSERT INTO articles (id, biz_id, faker_id, url, title, author, publish_time,
-                               fetched_at, local_path, summary, article_type, fetch_status)
+                              fetched_at, local_path, summary, article_type, fetch_status,
+                              has_content, fetch_attempts)
         VALUES (:id, :biz_id, :faker_id, :url, :title, :author, :publish_time,
-                :fetched_at, :local_path, :summary, :article_type, :fetch_status)
+                :fetched_at, :local_path, :summary, :article_type, :fetch_status,
+                :has_content, 1)
         ON CONFLICT(id) DO UPDATE SET
             title=COALESCE(NULLIF(excluded.title, ''), title),
             author=COALESCE(NULLIF(excluded.author, ''), author),
@@ -84,20 +124,83 @@ def upsert_article(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
             summary=COALESCE(NULLIF(excluded.summary, ''), summary),
             article_type=excluded.article_type,
             fetch_status=CASE
+                WHEN articles.fetch_status IN ('success', 'deleted')
+                    THEN articles.fetch_status
                 WHEN excluded.fetch_status = 'metadata-only'
                      AND excluded.local_path = ''
-                     AND COALESCE(local_path, '') <> ''
-                THEN fetch_status
-                ELSE COALESCE(NULLIF(excluded.fetch_status, ''), fetch_status)
-            END
+                     AND COALESCE(articles.local_path, '') <> ''
+                THEN articles.fetch_status
+                ELSE COALESCE(NULLIF(excluded.fetch_status, ''), articles.fetch_status)
+            END,
+            has_content=CASE
+                WHEN articles.has_content = 1 OR excluded.has_content = 1 THEN 1
+                ELSE 0
+            END,
+            fetch_attempts=articles.fetch_attempts + 1
         """,
-        row,
+        payload,
     )
     return not existed
 
 
 def has_article(conn: sqlite3.Connection, article_id: str) -> bool:
     return conn.execute("SELECT 1 FROM articles WHERE id = ?", (article_id,)).fetchone() is not None
+
+
+def get_article_status(conn: sqlite3.Connection, article_id: str) -> dict[str, Any] | None:
+    """Return enough state to decide whether to skip / retry this article. None if absent."""
+    row = conn.execute(
+        "SELECT has_content, fetch_status, fetch_attempts, local_path "
+        "FROM articles WHERE id = ?",
+        (article_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def should_retry(status: dict[str, Any] | None) -> bool:
+    """Decide whether an existing article warrants a body refetch.
+
+    None              → True  (caller should treat as new)
+    has_content=1     → False (already succeeded)
+    fetch_status=deleted → False (terminal)
+    fetch_attempts >= MAX_FETCH_ATTEMPTS → False (gave up)
+    otherwise         → True
+    """
+    if status is None:
+        return True
+    if int(status.get("has_content") or 0) == 1:
+        return False
+    if status.get("fetch_status") == "deleted":
+        return False
+    if int(status.get("fetch_attempts") or 0) >= MAX_FETCH_ATTEMPTS:
+        return False
+    return True
+
+
+def list_repair_candidates(
+    conn: sqlite3.Connection,
+    biz_id: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Articles whose body is missing but still worth retrying.
+
+    Excludes terminal ``deleted`` and rows that already hit ``MAX_FETCH_ATTEMPTS``.
+    """
+    sql = (
+        "SELECT * FROM articles "
+        "WHERE has_content = 0 "
+        "AND COALESCE(fetch_status, '') != 'deleted' "
+        "AND fetch_attempts < ?"
+    )
+    params: list[Any] = [MAX_FETCH_ATTEMPTS]
+    if biz_id:
+        sql += " AND biz_id = ?"
+        params.append(biz_id)
+    sql += " ORDER BY publish_time DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def list_articles(
@@ -124,7 +227,9 @@ def list_articles(
 
 
 def get_article(conn: sqlite3.Connection, article_id: str) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM articles WHERE id = ? OR url = ?", (article_id, article_id)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM articles WHERE id = ? OR url = ?", (article_id, article_id)
+    ).fetchone()
     return dict(row) if row else None
 
 

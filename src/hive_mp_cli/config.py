@@ -23,6 +23,7 @@ class Paths:
     chrome_profile: Path
     articles_dir: Path
     logs_dir: Path
+    filter_rules_file: Path
 
     @classmethod
     def resolve(cls) -> "Paths":
@@ -36,6 +37,7 @@ class Paths:
             chrome_profile=home / "chrome-profile",
             articles_dir=home / "articles",
             logs_dir=home / "logs",
+            filter_rules_file=home / "filter_rules.yaml",
         )
 
     def ensure(self) -> None:
