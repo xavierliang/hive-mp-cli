@@ -37,11 +37,18 @@ class ArticleFetcher:
 
     def __init__(
         self,
-        wait_timeout: int = 10000,
+        wait_timeout: int = 30000,
+        content_timeout: int = 15000,
         proxy_url: str | None = None,
         scroll_for_images: bool = True,
     ) -> None:
+        # wait_timeout: navigation budget (page.goto)
+        # content_timeout: how long to wait for #js_content / #js_article to
+        # actually appear in the DOM. Distinct from goto because we use
+        # ``wait_until="commit"`` — goto returns very fast and the DOM gets
+        # populated separately.
         self.wait_timeout = wait_timeout
+        self.content_timeout = content_timeout
         self.proxy_url = proxy_url
         self.scroll_for_images = scroll_for_images
         self.controller: PlaywrightController | None = None
@@ -95,7 +102,19 @@ class ArticleFetcher:
             return info
 
         page = self.controller.page
-        await asyncio.sleep(2)
+        # With wait_until="commit" the page may still be hydrating; wait
+        # explicitly for the article body container OR for the delete-marker
+        # body text to be present. Either is fine — we just need the DOM to
+        # have caught up enough that subsequent reads see real content.
+        try:
+            await page.wait_for_selector(
+                "#js_content, #js_article", timeout=self.content_timeout
+            )
+        except Exception:
+            # Not finding either selector is normal for blocked / deleted
+            # pages — those carry a marker in the body which the check below
+            # will catch. We don't fail-hard here.
+            pass
         body_text = ""
         try:
             body_text = await page.locator("body").text_content() or ""

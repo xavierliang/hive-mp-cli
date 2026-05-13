@@ -95,16 +95,23 @@ class PlaywrightController:
         if self.debug:
             logger.info("browser ready in %.2fs (mobile=%s)", time.time() - t0, self.mobile_mode)
 
-    async def open(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000) -> bool:
+    async def open(self, url: str, wait_until: str = "commit", timeout: int = 30000) -> bool:
+        """Navigate to ``url``. ``wait_until="commit"`` fires as soon as the
+        server starts responding — far more reliable than ``domcontentloaded``,
+        which third-party scripts on WeChat article pages can stall for >30s.
+        Callers should follow up with ``page.wait_for_selector(...)`` for the
+        DOM element they actually need."""
         if not self.is_ready():
             await self.start()
         try:
             await self._page.goto(url, wait_until=wait_until, timeout=timeout)
+            # Best-effort: give the page a few seconds to quiet down. Capped
+            # short because some pages never reach networkidle (long-poll
+            # heartbeats, ads) and we don't need to wait for that.
             try:
-                await self._page.wait_for_load_state("networkidle", timeout=10000)
+                await self._page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
                 pass
-            await asyncio.sleep(0.5)
             return True
         except Exception as exc:
             logger.error("open(%s) failed: %s", url, exc)
