@@ -48,3 +48,16 @@ def test_fingerprint_is_hex_string() -> None:
     fp = fingerprint()
     assert len(fp) == 32
     int(fp, 16)  # valid hex
+
+
+def test_no_in_app_pretense_header() -> None:
+    """``X-Requested-With: com.tencent.mm`` triggers ``WeixinJSBridge`` waits
+    in the article page, delaying DOMContentLoaded ~6s and tripping our goto
+    timeout. We deliberately do not set it — guard against accidental revival."""
+    cfg = AntiCrawlerConfig()
+    for mobile in (True, False):
+        opts = cfg.context_options(mobile_mode=mobile)
+        headers = opts.get("extra_http_headers") or {}
+        assert "X-Requested-With" not in headers, (
+            "X-Requested-With must not be set — see commit history for why"
+        )

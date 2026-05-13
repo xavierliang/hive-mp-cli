@@ -253,12 +253,16 @@ class AntiCrawlerConfig:
             "bypass_csp": True,
             "extra_http_headers": self._http_headers(mobile_mode),
         }
-        if mobile_mode:
-            cfg["extra_http_headers"]["X-Requested-With"] = "com.tencent.mm"
+        # NOTE: upstream we-mp-rss also sets ``X-Requested-With: com.tencent.mm``
+        # here to pretend the request is coming from inside the WeChat app. We
+        # deliberately do NOT — it makes the article page block on
+        # ``WeixinJSBridge`` (which doesn't exist in vanilla Chromium), which
+        # delays DOMContentLoaded from ~4s to ~11s and trips the goto timeout.
+        # See the probe in commit history: removing it cuts load time ~60%.
         return cfg
 
     def _http_headers(self, mobile_mode: bool) -> dict[str, str]:
-        headers = {
+        return {
             "Accept": random.choice(_HEADERS_ACCEPT),
             "Accept-Language": random.choice(_HEADERS_LANG),
             "Accept-Encoding": "gzip, deflate, br",
@@ -269,9 +273,6 @@ class AntiCrawlerConfig:
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         }
-        if mobile_mode:
-            headers["X-Requested-With"] = "com.tencent.mm"
-        return headers
 
     @staticmethod
     def init_script() -> str:
