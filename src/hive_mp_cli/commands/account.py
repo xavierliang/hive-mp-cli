@@ -1,4 +1,4 @@
-"""``hive-mp account ...`` subcommands: search/add/list/remove/info."""
+"""``hive-mp account ...`` subcommands: add / list / remove / info."""
 from __future__ import annotations
 
 import json as _json
@@ -12,11 +12,13 @@ from rich.table import Table
 from hive_mp_cli.config import PATHS
 from hive_mp_cli.log import setup as setup_logging
 from hive_mp_cli.storage import accounts as accounts_store
+from hive_mp_cli.storage.accounts import AccountsFileCorrupted
 from hive_mp_cli.wechat.api import WeChatAPI
 from hive_mp_cli.wechat.gather.base import InvalidSessionError, make_api_from_token
 
 app = typer.Typer(help="Manage subscribed WeChat public accounts.", no_args_is_help=True)
-console = Console()
+# stderr so JSON / agent-readable output on stdout stays clean.
+console = Console(stderr=True)
 
 
 def _emit_error(
@@ -33,6 +35,14 @@ def _emit_error(
     else:
         console.print(f"[red]{message}[/red]")
     raise typer.Exit(code=code)
+
+
+def _guard_corruption(json_output: bool) -> None:
+    """Catch accounts.json corruption early so callers don't see a traceback."""
+    try:
+        accounts_store.list_all()
+    except AccountsFileCorrupted as exc:
+        _emit_error(json_output, "accounts_corrupted", str(exc), code=1)
 
 
 def _resolve_account(api: WeChatAPI, name_or_biz: str) -> dict | None:
@@ -54,16 +64,18 @@ def _resolve_account(api: WeChatAPI, name_or_biz: str) -> dict | None:
 @app.command("add")
 def add_cmd(
     name_or_biz: str = typer.Argument(..., help="Public account name or biz_id."),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Search WeChat and add the top match to accounts.json."""
     setup_logging(log_dir=PATHS.logs_dir)
     PATHS.ensure()
+    _guard_corruption(json_output)
 
     existing = accounts_store.find(name_or_biz)
     if existing:
         if json_output:
-            typer.echo(_json.dumps(existing, ensure_ascii=False, indent=2))
+            payload = {"ok": True, "added": False, "account": existing}
+            typer.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             console.print(f"[yellow]Already added:[/yellow] {existing['name']} ({existing['biz_id']})")
         return
@@ -98,15 +110,19 @@ def add_cmd(
 
     saved = accounts_store.add(candidate)
     if json_output:
-        typer.echo(_json.dumps(saved, ensure_ascii=False, indent=2))
+        payload = {"ok": True, "added": True, "account": saved}
+        typer.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         console.print(f"[green]Added:[/green] {saved['name']} ({saved['biz_id']})")
 
 
 @app.command("list")
-def list_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
+def list_cmd(json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption.")) -> None:
     """List all subscribed accounts."""
-    accs = accounts_store.list_all()
+    try:
+        accs = accounts_store.list_all()
+    except AccountsFileCorrupted as exc:
+        _emit_error(json_output, "accounts_corrupted", str(exc), code=1)
     if json_output:
         typer.echo(_json.dumps(accs, ensure_ascii=False, indent=2))
         return
@@ -127,10 +143,14 @@ def list_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
 @app.command("remove")
 def remove_cmd(
     name_or_biz: str = typer.Argument(...),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Remove a subscribed account."""
-    if accounts_store.remove(name_or_biz):
+    try:
+        removed = accounts_store.remove(name_or_biz)
+    except AccountsFileCorrupted as exc:
+        _emit_error(json_output, "accounts_corrupted", str(exc), code=1)
+    if removed:
         if json_output:
             typer.echo(_json.dumps({"ok": True, "removed": name_or_biz}, ensure_ascii=False))
         else:
@@ -148,10 +168,13 @@ def remove_cmd(
 @app.command("info")
 def info_cmd(
     name_or_biz: str = typer.Argument(...),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Show metadata for a subscribed account."""
-    acc = accounts_store.find(name_or_biz)
+    try:
+        acc = accounts_store.find(name_or_biz)
+    except AccountsFileCorrupted as exc:
+        _emit_error(json_output, "accounts_corrupted", str(exc), code=1)
     if not acc:
         _emit_error(
             json_output,

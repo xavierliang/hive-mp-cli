@@ -6,10 +6,14 @@ single-user CLI.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from typing import Any
 
 from hive_mp_cli.config import PATHS
+
+logger = logging.getLogger(__name__)
 
 
 def save(token_data: dict[str, Any], ext_data: dict[str, Any] | None = None) -> None:
@@ -24,13 +28,22 @@ def save(token_data: dict[str, Any], ext_data: dict[str, Any] | None = None) -> 
     if ext_data:
         payload["ext_data"] = ext_data
     PATHS.home.mkdir(parents=True, exist_ok=True)
-    PATHS.token_file.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    # umask 0o077 ensures the file is created mode 0o600 even on filesystems
+    # where the post-hoc chmod below silently fails (e.g. some network mounts).
+    old_umask = os.umask(0o077)
+    try:
+        PATHS.token_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    finally:
+        os.umask(old_umask)
     try:
         PATHS.token_file.chmod(0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.warning(
+            "Could not chmod %s to 0o600 (%s); token may be world-readable.",
+            PATHS.token_file, exc,
+        )
 
 
 def load() -> dict[str, Any] | None:

@@ -13,6 +13,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from hive_mp_cli.config import PATHS
 
@@ -53,8 +54,37 @@ CREATE TABLE IF NOT EXISTS sync_log (
 """
 
 
+_CANONICAL_QUERY_KEYS = frozenset({"__biz", "mid", "idx", "sn"})
+
+
+def _canonical_url_key(url: str) -> str:
+    """Strip tracking/session params so equivalent URLs share a key.
+
+    WeChat article URLs come in two shapes:
+      - ``/s/<token>?chksm=...&scene=...`` (modern): token alone identifies it
+      - ``/s?__biz=...&mid=...&idx=...&sn=...&chksm=...`` (legacy): the first
+        four params identify it; the rest are tracking
+    Anything else is returned unchanged.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.path.startswith("/s/"):
+        return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+    if parts.path == "/s" and parts.query:
+        params = sorted(
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=False)
+            if k in _CANONICAL_QUERY_KEYS
+        )
+        if params:
+            return f"{parts.scheme}://{parts.netloc}/s?" + urlencode(params)
+    return url
+
+
 def article_id_for_url(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_url_key(url).encode("utf-8")).hexdigest()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

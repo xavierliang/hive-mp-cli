@@ -7,7 +7,8 @@ from rich.console import Console
 
 from hive_mp_cli.auth import token as token_store
 
-console = Console()
+# stderr so JSON output on stdout stays clean.
+console = Console(stderr=True)
 
 
 def status_cmd(

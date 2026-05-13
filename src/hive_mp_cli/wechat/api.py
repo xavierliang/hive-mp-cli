@@ -39,8 +39,15 @@ def parse_response_status(payload: dict[str, Any]) -> None:
     """Translate ``base_resp.ret`` into our typed exceptions.
 
     Single source of truth for ret-code semantics; called by every WeChatAPI
-    method that returns JSON, so callers never see a payload with a non-zero ret.
+    method that returns JSON, so callers never see a payload with a non-zero
+    ret. A missing ``base_resp`` is treated as a malformed response — refusing
+    to silently treat it as success is what catches accidental WeChat error
+    pages (HTML, captcha) that decoded into ``{}``.
     """
+    if not isinstance(payload, dict) or "base_resp" not in payload:
+        raise RuntimeError(
+            "微信 API 响应格式异常（缺失 base_resp）— 可能是 HTML 错误页或抓到了风控页面"
+        )
     base = payload.get("base_resp") or {}
     ret = base.get("ret")
     if ret in (None, 0):
@@ -128,6 +135,20 @@ _DEFAULT_HEADERS = {
 }
 _REQUEST_TIMEOUT = 30.0
 
+_LEGACY_QR_RE = re.compile(
+    r"(https?://mp\.weixin\.qq\.com/cgi-bin/loginqrcode\?action=getqrcode&param=\d+)"
+)
+_LEGACY_UUID_RE = re.compile(r"""(?:"|')uuid(?:"|')\s*:\s*(?:"|')([^"']+)(?:"|')""")
+
+
+def _parse_legacy_qr(html: str) -> tuple[str, str] | None:
+    """Extract (qr_url, uuid) from the pre-Vue login page. None if HTML is new-style."""
+    qr_match = _LEGACY_QR_RE.search(html)
+    uuid_match = _LEGACY_UUID_RE.search(html)
+    if not (qr_match and uuid_match):
+        return None
+    return qr_match.group(1), uuid_match.group(1)
+
 
 class WeChatAPI:
     BASE_URL = "https://mp.weixin.qq.com"
@@ -141,32 +162,78 @@ class WeChatAPI:
 
     # ------------------------------------------------------------------ login
     def request_qr(self) -> QRSession:
-        """GET login page, regex out the QR url + uuid, download the QR PNG."""
+        """Fetch the login QR.
+
+        Tries the legacy HTML-embedded URL first (pre-Vue login page); if not
+        found, falls back to the current Vue-SPA flow: POST
+        ``bizlogin?action=startlogin`` to establish a session uuid, then GET
+        ``scanloginqrcode?action=getqrcode`` which returns PNG bytes directly.
+        """
         resp = self.session.get(f"{self.BASE_URL}/", timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
 
-        qr_match = re.search(
-            r"(https?://mp\.weixin\.qq\.com/cgi-bin/loginqrcode\?action=getqrcode&param=\d+)",
-            resp.text,
-        )
-        uuid_match = re.search(
-            r"""(?:"|')uuid(?:"|')\s*:\s*(?:"|')([^"']+)(?:"|')""",
-            resp.text,
-        )
-        if not (qr_match and uuid_match):
-            raise RuntimeError("Failed to parse QR info from mp.weixin.qq.com login page")
+        legacy = _parse_legacy_qr(resp.text)
+        if legacy is not None:
+            qr_url, uuid = legacy
+            img = self.session.get(qr_url, timeout=_REQUEST_TIMEOUT)
+            img.raise_for_status()
+            return QRSession(
+                uuid=uuid,
+                qr_url=qr_url,
+                image_bytes=img.content,
+                fingerprint=self.fingerprint,
+            )
 
-        qr_url = qr_match.group(1)
-        uuid = uuid_match.group(1)
-        img_resp = self.session.get(qr_url, timeout=_REQUEST_TIMEOUT)
-        img_resp.raise_for_status()
-
+        uuid = self._start_login()
+        timestamp = int(time.time() * 1000)
+        qr_url = (
+            f"{self.BASE_URL}/cgi-bin/scanloginqrcode"
+            f"?action=getqrcode&uuid={uuid}&random={timestamp}"
+        )
+        img = self.session.get(qr_url, allow_redirects=False, timeout=_REQUEST_TIMEOUT)
+        img.raise_for_status()
+        ctype = img.headers.get("content-type", "")
+        if not ctype.startswith("image/") or not img.content:
+            raise RuntimeError(
+                "QR endpoint returned non-image "
+                f"(content-type={ctype!r}, bytes={len(img.content)}); "
+                "the login flow may have changed again — please open an issue"
+            )
         return QRSession(
             uuid=uuid,
             qr_url=qr_url,
-            image_bytes=img_resp.content,
+            image_bytes=img.content,
             fingerprint=self.fingerprint,
         )
+
+    def _start_login(self) -> str:
+        """POST ``/cgi-bin/bizlogin?action=startlogin`` and return the session uuid.
+
+        The new Vue-SPA login flow requires this call before ``getqrcode`` will
+        return a valid PNG. The server sets a ``uuid`` cookie which subsequent
+        requests carry implicitly via the session.
+        """
+        uuid = generate_uuid()
+        self.session.cookies.set("uuid", uuid)
+        token = self.session.cookies.get("token", "") or ""
+        data = {
+            "fingerprint": self.fingerprint,
+            "token": token,
+            "lang": "zh_CN",
+            "f": "json",
+            "ajax": "1",
+            "redirect_url": (
+                f"/cgi-bin/settingpage?t=setting/index&action=index&token={token}&lang=zh_CN"
+            ),
+            "login_type": "3",
+        }
+        resp = self.session.post(
+            f"{self.BASE_URL}/cgi-bin/bizlogin?action=startlogin",
+            data=data,
+            timeout=_REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.cookies.get("uuid") or self.session.cookies.get("uuid") or uuid
 
     def poll_status(self) -> str:
         """One poll of /cgi-bin/scanloginqrcode?action=ask.

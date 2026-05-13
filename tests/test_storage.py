@@ -41,6 +41,35 @@ def test_article_id_is_deterministic() -> None:
     assert a != c
 
 
+def test_article_id_normalizes_path_style_urls() -> None:
+    # Modern /s/<token> URLs differ only in tracking params → same article.
+    base = "https://mp.weixin.qq.com/s/AbC123XyZToken"
+    bare = db_store.article_id_for_url(base)
+    with_chksm = db_store.article_id_for_url(f"{base}?chksm=abc123")
+    with_scene = db_store.article_id_for_url(f"{base}?from=appmsg&scene=27&subscene=0")
+    with_fragment = db_store.article_id_for_url(f"{base}#header")
+    assert bare == with_chksm == with_scene == with_fragment
+
+
+def test_article_id_normalizes_query_style_urls() -> None:
+    # Legacy /s?__biz=&mid=&idx=&sn= URLs with extra tracking params.
+    base = (
+        "https://mp.weixin.qq.com/s?__biz=MzU0&mid=2247&idx=1&sn=hashvalue"
+    )
+    bare = db_store.article_id_for_url(base)
+    with_chksm = db_store.article_id_for_url(f"{base}&chksm=abcd&scene=27")
+    reordered = db_store.article_id_for_url(
+        "https://mp.weixin.qq.com/s?sn=hashvalue&idx=1&mid=2247&__biz=MzU0"
+    )
+    assert bare == with_chksm == reordered
+
+
+def test_article_id_differs_for_different_articles() -> None:
+    a = db_store.article_id_for_url("https://mp.weixin.qq.com/s/tokenA")
+    b = db_store.article_id_for_url("https://mp.weixin.qq.com/s/tokenB")
+    assert a != b
+
+
 def test_upsert_and_dedup(tmp_home: Path) -> None:
     with db_store.connect() as conn:
         new1 = db_store.upsert_article(conn, _row("https://x.com/1"))

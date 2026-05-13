@@ -16,7 +16,8 @@ from hive_mp_cli.storage import accounts as accounts_store
 from hive_mp_cli.storage import db as db_store
 
 app = typer.Typer(help="Query archived articles.", no_args_is_help=True)
-console = Console()
+# stderr so machine-readable stdout (`typer.echo(json)`) stays clean.
+console = Console(stderr=True)
 
 
 def _to_date(s: str | None) -> int | None:
@@ -55,7 +56,7 @@ def list_cmd(
     name_or_biz: str | None = typer.Argument(None, help="Account name or biz_id; omit for all."),
     limit: int = typer.Option(20, "--limit"),
     since: str | None = typer.Option(None, "--since"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """List archived articles."""
     biz_id = None
@@ -94,7 +95,7 @@ def list_cmd(
 @app.command("read")
 def read_cmd(
     article_id: str = typer.Argument(..., help="Article id (sha256 of url, prefix OK) or full URL."),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Print the local markdown path for an article."""
     with db_store.connect() as conn:
@@ -151,7 +152,7 @@ def read_cmd(
 @app.command("url")
 def url_cmd(
     article_id: str = typer.Argument(...),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Print the original mp.weixin.qq.com URL for an article."""
     with db_store.connect() as conn:
@@ -186,7 +187,7 @@ def url_cmd(
 def search_cmd(
     keyword: str = typer.Argument(...),
     limit: int = typer.Option(20, "--limit"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Search archived titles + summaries (LIKE-based)."""
     with db_store.connect() as conn:

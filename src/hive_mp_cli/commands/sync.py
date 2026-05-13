@@ -13,10 +13,12 @@ import typer
 from rich.console import Console
 
 from hive_mp_cli.config import PATHS
-from hive_mp_cli.log import setup as setup_logging
+from hive_mp_cli.log import safe_exc, setup as setup_logging
 from hive_mp_cli.storage import accounts as accounts_store
 from hive_mp_cli.storage import db as db_store
 from hive_mp_cli.storage import files as files_store
+from hive_mp_cli.storage.accounts import AccountsFileCorrupted
+from hive_mp_cli.wechat import cooldown
 from hive_mp_cli.wechat.api import WeChatAPI
 from hive_mp_cli.wechat.article import ArticleFetcher
 from hive_mp_cli.wechat.gather import api_mode, web_mode
@@ -54,11 +56,24 @@ def sync_cmd(
         "--no-browser",
         help="Skip body fetching (only catalog metadata). Useful as a smoke test.",
     ),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption."),
 ) -> None:
     """Pull article catalog + bodies, write markdown + SQLite metadata."""
     setup_logging(log_dir=PATHS.logs_dir)
     PATHS.ensure()
+
+    active_cooldown = cooldown.check_cooldown()
+    if active_cooldown is not None:
+        _emit_error(
+            json_output,
+            "frequency_cooldown",
+            f"WeChat frequency control cooldown active "
+            f"({active_cooldown['remaining']}s remaining). "
+            "Wait before retrying — hammering more requests will extend the block.",
+            code=2,
+            remaining_seconds=active_cooldown["remaining"],
+            reason=active_cooldown["reason"],
+        )
 
     if mode not in _VALID_MODES:
         _emit_error(
@@ -80,15 +95,29 @@ def sync_cmd(
     out_root = Path(out).expanduser().resolve() if out else PATHS.articles_dir
     out_root.mkdir(parents=True, exist_ok=True)
 
-    targets = _resolve_targets(name_or_biz)
+    try:
+        targets = _resolve_targets(name_or_biz)
+    except AccountsFileCorrupted as exc:
+        _emit_error(json_output, "accounts_corrupted", str(exc), code=1)
     if not targets:
         target = name_or_biz or "<all>"
+        try:
+            available = [a.get("name") or a.get("biz_id") or "" for a in accounts_store.list_all()]
+        except AccountsFileCorrupted:
+            available = []
+        hint = (
+            f" Run `hive-mp account list` to see subscribed accounts. "
+            f"Currently subscribed: {available}"
+            if available
+            else " No accounts subscribed yet — `hive-mp account add <name>` to start."
+        )
         _emit_error(
             json_output,
             "account_not_found",
-            f"No subscribed accounts match '{target}'.",
+            f"No subscribed accounts match '{target}'.{hint}",
             code=1,
             target=target,
+            available=available,
         )
 
     since_ts = _parse_since(since) if since else None
@@ -136,6 +165,18 @@ def sync_cmd(
                 f"existing={stats.existing_articles} repaired={stats.repaired_articles} "
                 f"failed={stats.failed_articles} skipped_dead={stats.skipped_dead}"
             )
+        # If this account tripped 200013, stop hammering. The IP-scoped block
+        # affects every other account in the run too — keep walking and we
+        # just extend the cooldown window.
+        if any("200013" in e or "频率" in e for e in stats.errors):
+            reason = next((e for e in stats.errors if "200013" in e or "频率" in e), "200013")
+            cooldown.mark_frequency_control(reason=reason)
+            if not json_output:
+                console.print(
+                    "[yellow]frequency control tripped; skipping remaining accounts. "
+                    "Cooldown persisted for next run.[/yellow]"
+                )
+            break
         random_sleep(cfg.post_account_min, cfg.post_account_max, label="between accounts")
 
     if json_output:
@@ -210,7 +251,7 @@ async def _sync_one(
                 except InvalidSessionError:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    stats.errors.append(repr(exc))
+                    stats.errors.append(safe_exc(exc))
                     exit_code = max(exit_code, 2)
                     logger.exception("list iteration failed for %s", name)
                     break
@@ -334,8 +375,8 @@ async def _sync_one(
         _finish_sync_after_error(sync_id, stats, "login expired")
         raise
     except Exception as exc:  # noqa: BLE001
-        stats.errors.append(repr(exc))
-        _finish_sync_after_error(sync_id, stats, repr(exc))
+        stats.errors.append(safe_exc(exc))
+        _finish_sync_after_error(sync_id, stats, safe_exc(exc))
         logger.exception("sync_one failed for %s", name)
         exit_code = max(exit_code, 2)
     finally:
@@ -442,8 +483,8 @@ async def _repair_one(
             db_store.finish_sync(conn, sync_id, stats.repaired_articles)
             sync_id = None
     except Exception as exc:  # noqa: BLE001
-        stats.errors.append(repr(exc))
-        _finish_sync_after_error(sync_id, stats, repr(exc))
+        stats.errors.append(safe_exc(exc))
+        _finish_sync_after_error(sync_id, stats, safe_exc(exc))
         logger.exception("repair_one failed for %s", name)
         exit_code = max(exit_code, 2)
     finally:

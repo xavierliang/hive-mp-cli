@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Callable
@@ -31,7 +32,8 @@ def perform_login(
     qr = api.request_qr()
 
     PATHS.ensure()
-    qr_path = PATHS.home / "qrcode.png"
+    # PID-suffixed so concurrent `hive-mp login` runs don't clobber each other.
+    qr_path = PATHS.home / f"qrcode-{os.getpid()}.png"
     qr_path.write_bytes(qr.image_bytes)
     if on_event:
         on_event("qr_ready", str(qr_path))

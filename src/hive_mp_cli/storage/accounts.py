@@ -14,11 +14,20 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import logging
 import time
 from collections.abc import Iterator
 from typing import Any
 
 from hive_mp_cli.config import PATHS
+
+logger = logging.getLogger(__name__)
+
+
+class AccountsFileCorrupted(RuntimeError):
+    """Raised when ``accounts.json`` cannot be parsed. The original file is
+    renamed to ``accounts.json.corrupted-<ts>`` so users can recover by hand
+    without us silently overwriting their data."""
 
 
 @contextlib.contextmanager
@@ -38,12 +47,32 @@ def _read() -> dict[str, Any]:
     if not PATHS.accounts_file.exists():
         return {"accounts": []}
     try:
-        data = json.loads(PATHS.accounts_file.read_text(encoding="utf-8"))
-        if "accounts" not in data:
-            data = {"accounts": []}
-        return data
-    except (OSError, json.JSONDecodeError):
-        return {"accounts": []}
+        text = PATHS.accounts_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AccountsFileCorrupted(
+            f"Could not read {PATHS.accounts_file}: {exc}"
+        ) from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Quarantine the bad file so the next write doesn't silently overwrite
+        # the user's subscription list with an empty array.
+        backup = PATHS.accounts_file.with_suffix(f".json.corrupted-{int(time.time())}")
+        try:
+            PATHS.accounts_file.rename(backup)
+        except OSError:
+            backup = None
+        logger.error(
+            "accounts.json is corrupted (parse error at line %d col %d); "
+            "moved to %s. Edit it and rename back, or delete to start fresh.",
+            exc.lineno, exc.colno, backup,
+        )
+        raise AccountsFileCorrupted(
+            f"accounts.json is corrupted; original kept at {backup}"
+        ) from exc
+    if not isinstance(data, dict) or "accounts" not in data:
+        data = {"accounts": []}
+    return data
 
 
 def _write(data: dict[str, Any]) -> None:

@@ -183,6 +183,7 @@ class ArticleFetcher:
                     info["mp_id"] = ""
 
         except Exception as exc:
+            logger.warning("article fetch partial for %s: %s", url, exc)
             info["fetch_error"] = str(exc)
             info["fetch_status"] = "partial"
 
@@ -206,11 +207,17 @@ class ArticleFetcher:
         await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
         await asyncio.sleep(0.7)
 
-    async def _extract_publish_time(self, page: Any) -> int:
+    async def _extract_publish_time(self, page: Any) -> int | None:
+        """Return the article's publish time as a unix ts, or ``None`` if the
+        page didn't expose one. Callers must treat None as "no known time" —
+        do not substitute ``now()``: that corrupts ``--since`` filtering and the
+        filename date."""
         try:
             txt = await page.locator("#publish_time").text_content()
             if txt:
-                return self._parse_time(txt)
+                parsed = self._parse_time(txt)
+                if parsed is not None:
+                    return parsed
         except Exception:
             pass
         try:
@@ -222,10 +229,13 @@ class ArticleFetcher:
             ):
                 m = re.search(pattern, content)
                 if m:
-                    return self._parse_time(m.group(1))
+                    parsed = self._parse_time(m.group(1))
+                    if parsed is not None:
+                        return parsed
         except Exception:
             pass
-        return int(datetime.now().timestamp())
+        logger.warning("publish_time not found on page; leaving unset")
+        return None
 
     async def _detect_article_type(self, page: Any) -> int:
         try:
@@ -256,7 +266,9 @@ class ArticleFetcher:
         return 0
 
     @staticmethod
-    def _parse_time(text: str) -> int:
+    def _parse_time(text: str) -> int | None:
+        """Parse a WeChat-style date string into a unix ts. ``None`` if no
+        format matches — callers must not silently fall back to ``now()``."""
         try:
             normalized = re.sub(
                 r"(\d{4})年(\d{1,2})月(\d{1,2})日",
@@ -276,7 +288,7 @@ class ArticleFetcher:
                     continue
         except Exception:
             pass
-        return int(datetime.now().timestamp())
+        return None
 
     @staticmethod
     def _extract_biz(url: str, content: str) -> str:

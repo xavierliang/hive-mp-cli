@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from hive_mp_cli.cli import app
 from hive_mp_cli.storage import accounts as accounts_store
+from hive_mp_cli.storage.accounts import AccountsFileCorrupted
 
 
 def test_empty_initially(tmp_home: Path) -> None:
@@ -44,6 +46,36 @@ def test_update_last_synced(tmp_home: Path) -> None:
     accounts_store.update_last_synced("biz1", ts=1700000000)
     acc = accounts_store.find("biz1")
     assert acc["last_synced"] == 1700000000
+
+
+def test_corrupted_accounts_file_quarantined_and_raises(tmp_home: Path) -> None:
+    """Corrupted accounts.json must be moved aside, not silently overwritten."""
+    # First, add a real account so accounts.json has content worth preserving.
+    accounts_store.add({"biz_id": "biz1", "name": "A", "faker_id": "fk1"})
+    # Now corrupt the file.
+    from hive_mp_cli.config import PATHS
+    PATHS.accounts_file.write_text("{ not valid json", encoding="utf-8")
+
+    with pytest.raises(AccountsFileCorrupted):
+        accounts_store.list_all()
+
+    # Original file is gone (renamed); a *.corrupted-* sibling exists.
+    assert not PATHS.accounts_file.exists()
+    siblings = list(PATHS.accounts_file.parent.glob("accounts.json.corrupted-*"))
+    assert len(siblings) == 1
+    assert siblings[0].read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_corrupted_accounts_emits_json_via_cli(tmp_home: Path) -> None:
+    from hive_mp_cli.config import PATHS
+    PATHS.accounts_file.write_text("not json", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["account", "list", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"] == "accounts_corrupted"
 
 
 def test_account_info_json_not_found_is_parseable(tmp_home: Path) -> None:

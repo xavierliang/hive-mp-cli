@@ -10,10 +10,11 @@ from hive_mp_cli.auth import token as token_store
 from hive_mp_cli.config import PATHS
 from hive_mp_cli.log import setup as setup_logging
 
-console = Console()
+# stderr so JSON output on stdout (`typer.echo(json)`) stays clean.
+console = Console(stderr=True)
 
 
-def login_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
+def login_cmd(json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption.")) -> None:
     """Scan QR with WeChat, save session token to ~/.hive-mp/token.json."""
     setup_logging(log_dir=PATHS.logs_dir)
 
@@ -63,7 +64,7 @@ def login_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
         console.print(f"[green]Logged in.[/green] Token saved (expires: {expiry}).")
 
 
-def logout_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
+def logout_cmd(json_output: bool = typer.Option(False, "--json", help="Emit JSON to stdout for agent consumption.")) -> None:
     """Clear stored token."""
     token_store.clear()
     if json_output:
