@@ -20,6 +20,8 @@ from typing import Any
 
 import requests
 
+from hive_mp_cli.wechat import cooldown as _cooldown
+
 logger = logging.getLogger(__name__)
 
 
@@ -374,6 +376,8 @@ class WeChatAPI:
         resp.raise_for_status()
         payload = resp.json()
         parse_response_status(payload)
+        # API call succeeded → any prior 200013 cooldown is stale; clear it.
+        _cooldown.clear()
         return payload
 
     def list_articles_appmsg(
@@ -403,6 +407,8 @@ class WeChatAPI:
         resp.raise_for_status()
         payload = resp.json()
         parse_response_status(payload)
+        # API call succeeded → any prior 200013 cooldown is stale; clear it.
+        _cooldown.clear()
         return payload
 
     def list_articles_publish(
@@ -432,6 +438,8 @@ class WeChatAPI:
         resp.raise_for_status()
         payload = resp.json()
         parse_response_status(payload)
+        # API call succeeded → any prior 200013 cooldown is stale; clear it.
+        _cooldown.clear()
         return payload
 
     def _fix_headers(self, url: str) -> dict[str, str]:
