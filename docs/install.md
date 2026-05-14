@@ -217,23 +217,23 @@ WeChat 触发了风控（200013）。**等几个小时再试**，不要循环重
 
 ```bash
 # 方式 A：从 GitHub Release 装（版本固定，推荐）
-pipx install https://github.com/<org>/hive-mp-cli/releases/download/v0.1.0/hive_mp_cli-0.1.0-py3-none-any.whl
+pipx install https://github.com/xavierliang/hive-mp-cli/releases/download/v0.1.0/hive_mp_cli-0.1.0-py3-none-any.whl
 
 # 方式 B：从 main 分支装（永远最新，本地需要 git）
-pipx install git+https://github.com/<org>/hive-mp-cli
+pipx install git+https://github.com/xavierliang/hive-mp-cli
 ```
 
 国内用户走 GitHub 时 PyPI 依赖仍可走清华源：
 
 ```bash
 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    pipx install https://github.com/<org>/hive-mp-cli/releases/download/v0.1.0/hive_mp_cli-0.1.0-py3-none-any.whl
+    pipx install https://github.com/xavierliang/hive-mp-cli/releases/download/v0.1.0/hive_mp_cli-0.1.0-py3-none-any.whl
 ```
 
 Chromium 仍要单独装（同上的 npmmirror 镜像逻辑）。Skill 包同理从 GitHub Release 下：
 
 ```bash
 mkdir -p ~/.claude/skills/hive-mp-cli/
-curl -L https://github.com/<org>/hive-mp-cli/releases/download/v0.1.0/hive-mp-cli-skill.tar.gz | \
+curl -L https://github.com/xavierliang/hive-mp-cli/releases/download/v0.1.0/hive-mp-cli-skill.tar.gz | \
     tar -xC ~/.claude/skills/hive-mp-cli/
 ```

@@ -90,7 +90,7 @@ pipx install --force {{SITE}}/packages/hive-mp-cli/0.0.X/hive_mp_cli-0.0.X-py3-n
 如果 marketplace 不可达，从 GitHub Release 升级：
 
 ```bash
-pipx install --force https://github.com/<org>/hive-mp-cli/releases/latest/download/hive_mp_cli-py3-none-any.whl
+pipx install --force https://github.com/xavierliang/hive-mp-cli/releases/latest/download/hive_mp_cli-py3-none-any.whl
 ```
 
 `releases/latest/download/<filename>` 是 GitHub 自动维护的"最新版"重定向。国内用户走 GitHub 较慢，**优先用 marketplace 主路径**。

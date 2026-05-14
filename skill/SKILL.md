@@ -11,7 +11,7 @@ triggers:
   - 同步: 同步/归档/拉取/抓取/sync
   - 查询: 文章/article/读文章/搜文章
 metadata:
-  homepage: https://github.com/<org>/hive-mp-cli
+  homepage: https://github.com/xavierliang/hive-mp-cli
 ---
 
 # hive-mp-cli — 路由器
