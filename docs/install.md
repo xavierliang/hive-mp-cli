@@ -5,7 +5,7 @@
 复制下面这段给你的 AI Agent（Claude Code / Cursor / OpenClaw / Codex 等）：
 
 ```
-帮我安装 hive-mp-cli：https://raw.githubusercontent.com/<org>/hive-mp-cli/main/docs/install.md
+帮我安装 hive-mp-cli：{{SITE}}/install/hive-mp-cli.md
 ```
 
 Agent 会读这份指南把所有依赖装好，**你不用做别的**。装完后扫一次微信二维码就能开始用。
@@ -69,7 +69,7 @@ python3 -m pipx ensurepath
 ### Step 3 — 装 hive-mp-cli
 
 ```bash
-pipx install https://<your-domain>/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
+pipx install {{SITE}}/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
 ```
 
 国内用户 pipx 拉依赖时如果慢，可以提前给 pipx 配清华源：
@@ -77,7 +77,7 @@ pipx install https://<your-domain>/packages/hive-mp-cli/latest/hive_mp_cli-py3-n
 ```bash
 # <CN> 一次性给 pipx 配上清华镜像，再装
 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    pipx install https://<your-domain>/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
+    pipx install {{SITE}}/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
 ```
 
 验证：`hive-mp --version` 能跑出版本号就成功。
@@ -152,7 +152,7 @@ hive-mp sync "<公众号名>" --pages 1
 ```bash
 # Claude Code
 mkdir -p ~/.claude/skills/hive-mp-cli/
-curl -L https://<your-domain>/skills/hive-mp-cli.tar.gz | tar -xC ~/.claude/skills/hive-mp-cli/
+curl -L {{SITE}}/skills/hive-mp-cli.tar.gz | tar -xC ~/.claude/skills/hive-mp-cli/
 
 # Cursor — 把路径换成 ~/.cursor/skills/ 或对应 skill 目录
 # OpenClaw — ~/.openclaw/skills/hive-mp-cli/
@@ -166,7 +166,7 @@ curl -L https://<your-domain>/skills/hive-mp-cli.tar.gz | tar -xC ~/.claude/skil
 
 | 命令 | 作用 |
 |------|------|
-| `pipx install https://<your-domain>/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl` | 装 CLI |
+| `pipx install {{SITE}}/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl` | 装 CLI |
 | `pipx run --spec hive-mp-cli playwright install chromium` | 装 Chromium |
 | `hive-mp doctor` | 自检 |
 | `hive-mp login` | 扫码登录 |
@@ -206,5 +206,34 @@ Token 过期了（~2 小时）。`hive-mp login` 重扫一次即可。
 ### `hive-mp sync` 报 `frequency_cooldown` (exit 2)
 WeChat 触发了风控（200013）。**等几个小时再试**，不要循环重试——会延长 cooldown。这段时间可以跑 `hive-mp sync --repair`（不调用 WeChat API）补未完成的文章。
 
-### 国内用户访问 `<your-domain>` 慢
+### 国内用户访问 `{{SITE}}` 慢
 报告给我们；分发服务器有国内备案，理论上应该比 GitHub 快。
+
+---
+
+## 备用：从 GitHub 直装
+
+如果 `{{SITE}}` 的 marketplace 不可达，或者用户是开发者想用最新源码版本，可以走 GitHub 直装。**这条路对国内用户不友好（GitHub 慢），优先用 marketplace。**
+
+```bash
+# 方式 A：从 GitHub Release 装（版本固定，推荐）
+pipx install https://github.com/<org>/hive-mp-cli/releases/download/v0.1.0/hive_mp_cli-0.1.0-py3-none-any.whl
+
+# 方式 B：从 main 分支装（永远最新，本地需要 git）
+pipx install git+https://github.com/<org>/hive-mp-cli
+```
+
+国内用户走 GitHub 时 PyPI 依赖仍可走清华源：
+
+```bash
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    pipx install https://github.com/<org>/hive-mp-cli/releases/download/v0.1.0/hive_mp_cli-0.1.0-py3-none-any.whl
+```
+
+Chromium 仍要单独装（同上的 npmmirror 镜像逻辑）。Skill 包同理从 GitHub Release 下：
+
+```bash
+mkdir -p ~/.claude/skills/hive-mp-cli/
+curl -L https://github.com/<org>/hive-mp-cli/releases/download/v0.1.0/hive-mp-cli-skill.tar.gz | \
+    tar -xC ~/.claude/skills/hive-mp-cli/
+```

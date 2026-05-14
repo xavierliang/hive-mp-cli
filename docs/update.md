@@ -5,7 +5,7 @@
 复制下面这段给你的 AI Agent：
 
 ```
-帮我更新 hive-mp-cli：https://raw.githubusercontent.com/<org>/hive-mp-cli/main/docs/update.md
+帮我更新 hive-mp-cli：{{SITE}}/install/hive-mp-cli-update.md
 ```
 
 ---
@@ -23,14 +23,14 @@
 ### Step 2 — 升级 CLI
 
 ```bash
-pipx install --force https://<your-domain>/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
+pipx install --force {{SITE}}/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
 ```
 
 `--force` 让 pipx 覆盖装。国内用户：
 
 ```bash
 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    pipx install --force https://<your-domain>/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
+    pipx install --force {{SITE}}/packages/hive-mp-cli/latest/hive_mp_cli-py3-none-any.whl
 ```
 
 验证：
@@ -66,7 +66,7 @@ hive-mp doctor
 
 ```bash
 # Claude Code
-curl -L https://<your-domain>/skills/hive-mp-cli.tar.gz | tar -xC ~/.claude/skills/hive-mp-cli/
+curl -L {{SITE}}/skills/hive-mp-cli.tar.gz | tar -xC ~/.claude/skills/hive-mp-cli/
 
 # Cursor / OpenClaw — 换对应路径
 ```
@@ -78,7 +78,19 @@ curl -L https://<your-domain>/skills/hive-mp-cli.tar.gz | tar -xC ~/.claude/skil
 如果某次升级出了问题想回滚，重装上一版即可：
 
 ```bash
-pipx install --force https://<your-domain>/packages/hive-mp-cli/0.0.X/hive_mp_cli-0.0.X-py3-none-any.whl
+pipx install --force {{SITE}}/packages/hive-mp-cli/0.0.X/hive_mp_cli-0.0.X-py3-none-any.whl
 ```
 
-（如果你不知道历史版本号，问用户或者查 https://<your-domain>/packages/hive-mp-cli/）
+（如果你不知道历史版本号，问用户或者查 {{SITE}}/packages/hive-mp-cli/）
+
+---
+
+### 备用：从 GitHub 直装
+
+如果 marketplace 不可达，从 GitHub Release 升级：
+
+```bash
+pipx install --force https://github.com/<org>/hive-mp-cli/releases/latest/download/hive_mp_cli-py3-none-any.whl
+```
+
+`releases/latest/download/<filename>` 是 GitHub 自动维护的"最新版"重定向。国内用户走 GitHub 较慢，**优先用 marketplace 主路径**。

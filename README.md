@@ -17,11 +17,33 @@ service was stripped, only the WeChat HTTP API client + Playwright body fetcher
 复制下面这段给你的 AI Agent（Claude Code / Cursor / OpenClaw / Codex 等）：
 
 ```
-帮我安装 hive-mp-cli：https://raw.githubusercontent.com/<org>/hive-mp-cli/main/docs/install.md
+帮我安装 hive-mp-cli：https://resopod.ai/install/hive-mp-cli.md
 ```
 
-Agent 会读这份指南把所有依赖装好（包括国内学员的镜像源切换）。装完一次扫码就能用。
-已经装过想升级？把 `install.md` 换成 `update.md` 即可。
+国内学员用这条（自动走清华源 + npmmirror 镜像）：
+
+```
+帮我安装 hive-mp-cli：https://www.resopod.cn/install/hive-mp-cli.md
+```
+
+Agent 会读 marketplace 上的指南把所有依赖装好。装完一次扫码就能用。
+已经装过想升级？把 `install` 换成 `install/hive-mp-cli-update.md` 即可。
+
+## 备用：从 GitHub 直装（开发者 / Marketplace 不可达）
+
+```bash
+# 从 Release 装最新版
+pipx install https://github.com/<org>/hive-mp-cli/releases/latest/download/hive_mp_cli-py3-none-any.whl
+
+# 从 main 分支装（本地需要 git）
+pipx install git+https://github.com/<org>/hive-mp-cli
+
+# 然后装 Chromium
+pipx run --spec hive-mp-cli playwright install chromium
+hive-mp doctor
+```
+
+国内用户走 GitHub 较慢，**优先用上面的 marketplace 路径**。
 
 ## Features
 
