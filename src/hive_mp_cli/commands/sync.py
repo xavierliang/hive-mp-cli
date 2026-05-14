@@ -5,6 +5,7 @@ import asyncio
 import json as _json
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -33,7 +34,12 @@ from hive_mp_cli.wechat.gather.base import (
 from hive_mp_cli.wechat.parser import article_to_markdown, extract_excerpt
 
 logger = logging.getLogger(__name__)
+# stdout for progress (human + agent watch this). stderr reserved for errors.
+out = Console()
+# stderr console kept for _emit_error → red error lines on exit !=0.
 console = Console(stderr=True)
+
+ProgressCb = Callable[[dict[str, Any]], None]
 _VALID_MODES = {"api", "web"}
 _BODY_FAILURE_STATUSES = {"blocked", "deleted", "failed"}
 _FAILED_STATUSES = _BODY_FAILURE_STATUSES | {"partial"}
@@ -134,13 +140,23 @@ def sync_cmd(
     cfg = GatherConfig(max_pages=max_pages)
     aggregate: dict[str, tuple[GatherStats, int]] = {}
     final_code = 0
+    # In --json mode we stay silent during the run and dump the final blob; in
+    # default mode we stream a one-line-per-article progress to stdout so Agents
+    # (and humans) can see we're alive. A 10-article sync can take 2-5 minutes
+    # of mostly anti-crawler sleeps; without these lines the whole thing looks
+    # frozen.
+    progress: ProgressCb | None = None if json_output else _make_progress_reporter()
     for acc in targets:
         if not json_output:
             verb = "repairing" if repair else "syncing"
-            console.print(f"[bold cyan]→ {verb}[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
+            out.print(f"[bold cyan]→ {verb}[/bold cyan] {acc.get('name')}  ({acc.get('biz_id')})")
         try:
             if repair:
-                stats, code = asyncio.run(_repair_one(account=acc, cfg=cfg, out_root=out_root))
+                stats, code = asyncio.run(
+                    _repair_one(
+                        account=acc, cfg=cfg, out_root=out_root, progress=progress
+                    )
+                )
             else:
                 assert api is not None
                 stats, code = asyncio.run(
@@ -153,6 +169,7 @@ def sync_cmd(
                         since_ts=since_ts,
                         out_root=out_root,
                         no_browser=no_browser,
+                        progress=progress,
                     )
                 )
         except InvalidSessionError as exc:
@@ -160,7 +177,7 @@ def sync_cmd(
         aggregate[acc.get("name", acc.get("biz_id", "?"))] = (stats, code)
         final_code = max(final_code, code)
         if not json_output:
-            console.print(
+            out.print(
                 f"  [green]done[/green] new={stats.new_articles} "
                 f"existing={stats.existing_articles} repaired={stats.repaired_articles} "
                 f"failed={stats.failed_articles} skipped_dead={stats.skipped_dead}"
@@ -172,7 +189,7 @@ def sync_cmd(
             reason = next((e for e in stats.errors if "200013" in e or "频率" in e), "200013")
             cooldown.mark_frequency_control(reason=reason)
             if not json_output:
-                console.print(
+                out.print(
                     "[yellow]frequency control tripped; skipping remaining accounts. "
                     "Cooldown persisted for next run.[/yellow]"
                 )
@@ -199,6 +216,46 @@ def sync_cmd(
 
 
 # --------------------------------------------------------------------- core
+def _make_progress_reporter() -> ProgressCb:
+    """Return a callback that prints one Rich-formatted line per article event.
+
+    Two event shapes: ``{"event": "article_start", "index", "title", "publish_time"}``
+    (printed eagerly so an in-flight Playwright hang is visible) and
+    ``{"event": "article_done", "index", "fetch_status", "has_content", "duration_s"}``.
+    """
+
+    def _fmt_title(title: str | None) -> str:
+        t = (title or "[no title]").replace("\n", " ").strip()
+        return (t[:38] + "…") if len(t) > 40 else t
+
+    def _fmt_date(ts: int | None) -> str:
+        return time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else "?"
+
+    def report(ev: dict[str, Any]) -> None:
+        idx = ev.get("index", "?")
+        if ev["event"] == "article_start":
+            out.print(
+                f"  [dim]\\[{idx}][/dim] {_fmt_date(ev.get('publish_time'))} "
+                f"「{_fmt_title(ev.get('title'))}」 [dim]fetching…[/dim]"
+            )
+        elif ev["event"] == "article_done":
+            icon = "[green]✓[/green]" if ev.get("has_content") else "[red]✗[/red]"
+            status = ev.get("fetch_status") or "?"
+            dur = ev.get("duration_s") or 0.0
+            out.print(
+                f"  [dim]\\[{idx}][/dim] {_fmt_date(ev.get('publish_time'))} "
+                f"「{_fmt_title(ev.get('title'))}」 {icon} {status} "
+                f"[dim]({dur:.1f}s)[/dim]"
+            )
+        elif ev["event"] == "article_skipped":
+            out.print(
+                f"  [dim]\\[{idx}] skip[/dim] {_fmt_date(ev.get('publish_time'))} "
+                f"「{_fmt_title(ev.get('title'))}」 [dim]({ev.get('reason', '')})[/dim]"
+            )
+
+    return report
+
+
 async def _sync_one(
     api: WeChatAPI,
     account: dict[str, Any],
@@ -208,6 +265,7 @@ async def _sync_one(
     since_ts: int | None,
     out_root: Any,
     no_browser: bool,
+    progress: ProgressCb | None = None,
 ) -> tuple[GatherStats, int]:
     """Sync one account. Returns ``(stats, exit_code)``.
 
@@ -277,6 +335,18 @@ async def _sync_one(
                     else:
                         stats.existing_articles += 1
                     continue
+
+                # Emit progress eagerly — before the pre-article sleep + Playwright
+                # fetch (10-30s typical) — so the agent sees we're alive and knows
+                # which article is in flight if anything hangs.
+                if progress is not None:
+                    progress({
+                        "event": "article_start",
+                        "index": processed,
+                        "title": title,
+                        "publish_time": publish_time or None,
+                    })
+                t_article = time.time()
 
                 random_sleep(cfg.pre_article_min, cfg.pre_article_max, label="pre-article")
 
@@ -356,6 +426,17 @@ async def _sync_one(
                 else:
                     stats.existing_articles += 1
 
+                if progress is not None:
+                    progress({
+                        "event": "article_done",
+                        "index": processed,
+                        "title": title,
+                        "publish_time": publish_time or None,
+                        "fetch_status": fetch_status,
+                        "has_content": bool(body_html),
+                        "duration_s": time.time() - t_article,
+                    })
+
                 random_sleep(cfg.post_article_min, cfg.post_article_max, label="post-article")
 
             stats.pages_fetched = (processed + cfg.page_size - 1) // max(1, cfg.page_size)
@@ -390,6 +471,7 @@ async def _repair_one(
     account: dict[str, Any],
     cfg: GatherConfig,
     out_root: Path,
+    progress: ProgressCb | None = None,
 ) -> tuple[GatherStats, int]:
     """Refetch bodies for articles where ``has_content=0`` and attempts < cap.
 
@@ -419,10 +501,18 @@ async def _repair_one(
             fetcher = ArticleFetcher()
             await fetcher.start()
 
-            for cand in candidates:
+            for cand_idx, cand in enumerate(candidates, start=1):
                 url = cand.get("url") or ""
                 if not url:
                     continue
+                if progress is not None:
+                    progress({
+                        "event": "article_start",
+                        "index": cand_idx,
+                        "title": cand.get("title") or "",
+                        "publish_time": cand.get("publish_time") or None,
+                    })
+                t_article = time.time()
                 random_sleep(cfg.pre_article_min, cfg.pre_article_max, label="pre-article")
 
                 fetched = await fetcher.fetch(url)
@@ -477,6 +567,17 @@ async def _repair_one(
                 conn.commit()
                 if body_html:
                     stats.repaired_articles += 1
+
+                if progress is not None:
+                    progress({
+                        "event": "article_done",
+                        "index": cand_idx,
+                        "title": title,
+                        "publish_time": publish_time or None,
+                        "fetch_status": fetch_status,
+                        "has_content": bool(body_html),
+                        "duration_s": time.time() - t_article,
+                    })
 
                 random_sleep(cfg.post_article_min, cfg.post_article_max, label="post-article")
 

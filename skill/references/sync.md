@@ -6,8 +6,18 @@
 hive-mp sync                              # 同步所有订阅的公众号
 hive-mp sync "<公众号名>"                  # 只同步一个
 hive-mp sync "<公众号名>" --pages 1        # 只拉第 1 页（最近 ~10 篇）
-hive-mp sync "<公众号名>" --pages 5 --json # JSON 输出
 ```
+
+## 给 Agent 的预期说明
+
+**别加 `--json`**——sync 默认就把每篇文章的进度逐行打到 stdout，自然语言，你读得懂。`--json` 会把整个过程憋到最后一坨 JSON，反而让你看不到进度。
+
+**单次耗时**：`--pages 1`（10 篇文章左右）通常 **2-5 分钟**，反爬 sleep 占大头，**这是设计**——不要试图加速、不要超时杀。
+
+**两种使用姿势都行**：
+
+- **盯着看**：你的工具如果支持流式读取 stdout（Claude Code Bash tool 默认就是），每篇 ✓/✗ 会实时出现。最后一行 `→ syncing ... done new=X existing=Y ...` 表示结束。
+- **扔了等**：直接调用、不监控、命令返回后看完整输出。也 OK，数据是 per-article commit，中间被杀都不丢已写入的文章。
 
 ## 两种模式
 
