@@ -12,6 +12,17 @@ The crawler core is ported from
 service was stripped, only the WeChat HTTP API client + Playwright body fetcher
 + anti-crawler scripts are kept.
 
+## 一句话安装（推荐）
+
+复制下面这段给你的 AI Agent（Claude Code / Cursor / OpenClaw / Codex 等）：
+
+```
+帮我安装 hive-mp-cli：https://raw.githubusercontent.com/<org>/hive-mp-cli/main/docs/install.md
+```
+
+Agent 会读这份指南把所有依赖装好（包括国内学员的镜像源切换）。装完一次扫码就能用。
+已经装过想升级？把 `install.md` 换成 `update.md` 即可。
+
 ## Features
 
 - `hive-mp login` — QR login (scan with WeChat). Pure HTTP, no browser launch
@@ -23,16 +34,20 @@ service was stripped, only the WeChat HTTP API client + Playwright body fetcher
   - `--repair`: skip the list pull, only retry articles whose body never made
     it (`has_content=0`); safe to run even after the login token has expired
 - `hive-mp article list/read/url/search` — query archive
+- `hive-mp doctor` — runtime self-check (chromium / token / accounts / sync health / disk)
 - All commands accept `--json` for agent consumption
 - Standard exit codes: 0 ok / 1 user error / 2 network error / 3 login expired
 
-## Install
+## Install (开发者 / 从源码)
+
+End-users 用上面的"一句话安装"。这一节是给本地开发用的：
 
 ```bash
 git clone <this-repo>
 cd hive-mp-cli
 uv sync
 uv run playwright install chromium    # required for `sync` (article body)
+uv run hive-mp doctor                 # 自检
 ```
 
 Both `hive-mp` and `hive-mp-cli` binaries are registered.

@@ -5,6 +5,7 @@ import typer
 from hive_mp_cli import __version__
 from hive_mp_cli.commands.account import app as account_app
 from hive_mp_cli.commands.article import app as article_app
+from hive_mp_cli.commands.doctor import doctor_cmd
 from hive_mp_cli.commands.login import login_cmd, logout_cmd
 from hive_mp_cli.commands.status import status_cmd
 from hive_mp_cli.commands.sync import sync_cmd
@@ -41,6 +42,7 @@ app.command(name="login")(login_cmd)
 app.command(name="logout")(logout_cmd)
 app.command(name="status")(status_cmd)
 app.command(name="sync")(sync_cmd)
+app.command(name="doctor")(doctor_cmd)
 app.add_typer(account_app, name="account")
 app.add_typer(article_app, name="article")
 
