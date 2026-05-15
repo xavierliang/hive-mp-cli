@@ -64,7 +64,7 @@ JSON 模式下错误结构是 `{"ok": false, "error": "<code>", "message": "..."
 
 ## JSON 输出
 
-**所有命令**都支持 `--json`，给你这种 Agent 用。优先用 JSON 模式，stderr 上的彩色输出忽略即可。
+**几乎所有命令**都支持 `--json`，给你这种 Agent 用。优先用 JSON 模式，stderr 上的彩色输出忽略即可。
 
 例：
 
@@ -74,10 +74,11 @@ hive-mp doctor --json
 
 hive-mp account list --json
 # [{"biz_id": "MzA5...", "name": "阮一峰的网络日志", "last_synced": 1715000000}, ...]
-
-hive-mp sync "阮一峰的网络日志" --json
-# {"阮一峰的网络日志": {"new": 3, "existing": 7, "repaired": 0, "failed": 0, "errors": [], "exit_code": 0}}
 ```
+
+### 特例：sync 不要加 `--json`
+
+`hive-mp sync` 默认逐行打印每篇文章的进度到 stdout（`✓ 标题` / `✗ 标题`），自然语言、agent 直接读懂。加 `--json` 会把整个过程憋到结束才输出，反而失去进度感、容易让你误以为命令卡死。详见 [references/sync.md](references/sync.md)。
 
 ## 反爬注意
 

@@ -27,7 +27,8 @@ service was stripped, only the WeChat HTTP API client + Playwright body fetcher
 ```
 
 Agent 会读 marketplace 上的指南把所有依赖装好。装完一次扫码就能用。
-已经装过想升级？把 `install` 换成 `install/hive-mp-cli-update.md` 即可。
+
+**安装和升级是同一份指南**——已经装过的话，agent 按指南跑同样的命令、`pipx install` 加 `--force` 覆盖装就完成升级，`~/.hive-mp/` 数据不会丢。
 
 ## 备用：从 GitHub 直装（开发者 / Marketplace 不可达）
 
