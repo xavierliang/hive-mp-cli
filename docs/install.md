@@ -133,7 +133,7 @@ hive-mp login
 
 会在终端打印 ASCII 二维码 + 保存 PNG 到 `~/.hive-mp/qrcode.png`。**告诉用户用手机微信扫**（不是 PC 微信），扫完在手机上确认登录。
 
-完成后 `~/.hive-mp/token.json` 自动写入。token 大约 2 小时寿命，过期重跑 `hive-mp login` 即可。
+完成后 `~/.hive-mp/token.json` 自动写入。登录态实际是否可用由微信服务端决定；`hive-mp status` 会做远端验证，失效后重跑 `hive-mp login` 即可。
 
 ### Step 7 — 引导用户订阅第一个公众号
 
@@ -211,7 +211,7 @@ Homebrew Python 的保护。用 `pipx`（推荐）或加 `--break-system-package
 - 二维码 60 秒过期，过期重跑
 
 ### `hive-mp sync` 报 `login_expired` (exit 3)
-Token 过期了（~2 小时）。`hive-mp login` 重扫一次即可。
+微信远端验证确认登录态失效。`hive-mp login` 重扫一次即可。
 
 ### `hive-mp sync` 报 `frequency_cooldown` (exit 2)
 WeChat 触发了风控（200013）。**等几个小时再试**，不要循环重试——会延长 cooldown。这段时间可以跑 `hive-mp sync --repair`（不调用 WeChat API）补未完成的文章。

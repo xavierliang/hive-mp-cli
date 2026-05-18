@@ -79,7 +79,7 @@ Both `hive-mp` and `hive-mp-cli` binaries are registered.
 
 ```bash
 hive-mp login                              # scan QR with WeChat (terminal ASCII + PNG)
-hive-mp status                             # see token expiry
+hive-mp status                             # verify login remotely + show local expiry
 hive-mp account add "阮一峰的网络日志"
 hive-mp sync "阮一峰的网络日志" --pages 1
 ls ~/.hive-mp/articles/阮一峰的网络日志/    # → markdown files
@@ -226,7 +226,9 @@ tested but designed to be debuggable through `~/.hive-mp/logs/`.
 
 ## Known limitations
 
-- **Token expiry is short** (~2 hours typical): re-run `hive-mp login`
+- **Token expiry is server-controlled**: `hive-mp status` verifies the stored
+  token/cookies against WeChat; re-run `hive-mp login` when remote verification
+  fails
 - **Frequency control 200013**: a triggered account aborts that sync; retry
   later
 - **Image hosting**: markdown keeps original `mmbiz.qpic.cn` URLs, no local

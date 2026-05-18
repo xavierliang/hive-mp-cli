@@ -26,6 +26,7 @@ from hive_mp_cli.config import PATHS
 from hive_mp_cli.storage import accounts as accounts_store
 from hive_mp_cli.storage import db as db_store
 from hive_mp_cli.storage.accounts import AccountsFileCorrupted
+from hive_mp_cli.wechat.gather.base import InvalidSessionError, make_api_from_token
 
 console = Console(stderr=True)
 
@@ -130,7 +131,7 @@ def _check_chromium() -> dict[str, Any]:
 
 
 def _check_login() -> dict[str, Any]:
-    """Inspect ~/.hive-mp/token.json. Tokens are short-lived (~2h); warn near expiry."""
+    """Inspect ~/.hive-mp/token.json and verify the session with WeChat."""
     info = token_store.status()
     if not info.get("logged_in"):
         if info.get("expired"):
@@ -155,10 +156,40 @@ def _check_login() -> dict[str, Any]:
             "message": f"Token expires in {remaining}s.",
             "hint": "Run: hive-mp login (token is about to expire).",
         }
+
+    try:
+        remote = make_api_from_token().verify_login_status()
+    except InvalidSessionError as exc:
+        return {
+            "name": "login",
+            "status": "fail",
+            "message": str(exc),
+            "hint": "Run: hive-mp login",
+        }
+
+    if remote.get("logged_in") is False:
+        return {
+            "name": "login",
+            "status": "fail",
+            "message": f"Remote login verification failed: {remote.get('status')}.",
+            "hint": "Run: hive-mp login",
+        }
+    if remote.get("logged_in") is None:
+        return {
+            "name": "login",
+            "status": "warn",
+            "message": f"Remote login verification inconclusive: {remote.get('status')}.",
+            "hint": "Check network access to mp.weixin.qq.com, then retry.",
+        }
+
     return {
         "name": "login",
         "status": "ok",
-        "message": f"token valid, {remaining}s remaining" if remaining is not None else "token valid",
+        "message": (
+            f"token valid remotely, {remaining}s remaining"
+            if remaining is not None
+            else "token valid remotely"
+        ),
     }
 
 

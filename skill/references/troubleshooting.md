@@ -21,7 +21,7 @@ hive-mp doctor --json
 
 ## Token 过期（exit 3）
 
-WeChat token 大约 **2 小时**寿命。失效后任何调用 WeChat API 的命令都返回 exit 3。
+WeChat 登录态由服务端控制。`hive-mp status` 会远端验证本地保存的 token/cookie；失效后任何调用 WeChat API 的命令都返回 exit 3。
 
 ```bash
 hive-mp login

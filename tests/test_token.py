@@ -96,4 +96,4 @@ def test_cookie_expire_default_when_none_valid() -> None:
     cookies = [{"name": "noop", "value": "x"}]
     out = cookie_expire(cookies)
     assert out["expiry_timestamp"] > time.time()
-    assert out["remaining_seconds"] == 7200
+    assert out["remaining_seconds"] == 86400

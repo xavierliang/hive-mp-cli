@@ -20,6 +20,7 @@ from typing import Any
 
 import requests
 
+from hive_mp_cli.log import safe_exc
 from hive_mp_cli.wechat import cooldown as _cooldown
 
 logger = logging.getLogger(__name__)
@@ -80,11 +81,13 @@ def cookie_expire(cookies: list[dict[str, Any]]) -> dict[str, Any]:
             exp = _extract_expiry(c)
             if exp:
                 return exp
-    # Default 2h fallback (matches fork behavior)
-    default = time.time() + 7200
+    # Default 1d fallback when WeChat returns session cookies without usable
+    # expiry metadata. The real session is still server-controlled and must be
+    # verified remotely before treating it as usable.
+    default = time.time() + 86400
     return {
         "expiry_timestamp": default,
-        "remaining_seconds": 7200,
+        "remaining_seconds": 86400,
         "expiry_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(default)),
     }
 
@@ -330,8 +333,18 @@ class WeChatAPI:
 
     def verify_login(self) -> bool:
         """Hit /cgi-bin/home and check for login indicators in the HTML body."""
+        status = self.verify_login_status()
+        return status.get("logged_in") is True
+
+    def verify_login_status(self) -> dict[str, Any]:
+        """Hit /cgi-bin/home and return a structured remote login verdict."""
         if not self.token:
-            return False
+            return {
+                "checked": False,
+                "logged_in": False,
+                "status": "missing_token",
+                "message": "No token loaded.",
+            }
         try:
             resp = self.session.get(
                 f"{self.BASE_URL}/cgi-bin/home?token={self.token}",
@@ -340,13 +353,40 @@ class WeChatAPI:
             resp.raise_for_status()
         except requests.RequestException as exc:
             logger.warning("verify_login HTTP failed: %s", exc)
-            return False
+            return {
+                "checked": False,
+                "logged_in": None,
+                "status": "network_error",
+                "message": safe_exc(exc),
+            }
         if "home" not in resp.url:
-            return False
+            return {
+                "checked": True,
+                "logged_in": False,
+                "status": "redirected",
+                "message": "WeChat redirected away from the home page.",
+            }
         body = resp.text
         if any(s in body for s in _LOGIN_FAIL_INDICATORS):
-            return False
-        return any(s in body for s in _LOGIN_OK_INDICATORS)
+            return {
+                "checked": True,
+                "logged_in": False,
+                "status": "login_required",
+                "message": "WeChat home page shows a login prompt.",
+            }
+        if any(s in body for s in _LOGIN_OK_INDICATORS):
+            return {
+                "checked": True,
+                "logged_in": True,
+                "status": "ok",
+                "message": "WeChat home page accepted the stored session.",
+            }
+        return {
+            "checked": True,
+            "logged_in": None,
+            "status": "unknown",
+            "message": "WeChat home page loaded, but login markers were not recognized.",
+        }
 
     # ----------------------------------------------------- search & list
     def search_biz(self, keyword: str, limit: int = 10, offset: int = 0) -> dict[str, Any]:
