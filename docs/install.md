@@ -180,6 +180,7 @@ tar -xC <你的-skill-目录>/hive-mp-cli/ -f /tmp/hive-mp-cli-skill.tar.gz
 | `pipx run --spec hive-mp-cli playwright install chromium` | 装 Chromium |
 | `hive-mp doctor` | 自检 |
 | `hive-mp login` | 扫码登录 |
+| `hive-mp refresh --if-expiring-within 48h` | 无扫码续期仍有效的登录态，可放进 cron / launchd |
 | `hive-mp account add "<名>"` | 订阅公众号 |
 | `hive-mp sync "<名>"` | 拉文章 |
 | `hive-mp sync "<名>" --repair` | 修复未完成的文章（不需要 token） |
@@ -211,7 +212,7 @@ Homebrew Python 的保护。用 `pipx`（推荐）或加 `--break-system-package
 - 二维码 60 秒过期，过期重跑
 
 ### `hive-mp sync` 报 `login_expired` (exit 3)
-微信远端验证确认登录态失效。`hive-mp login` 重扫一次即可。
+微信远端验证确认登录态失效。若登录态还没被服务端拒绝，可先跑 `hive-mp refresh`；已经失效时只能 `hive-mp login` 重扫一次。
 
 ### `hive-mp sync` 报 `frequency_cooldown` (exit 2)
 WeChat 触发了风控（200013）。**等几个小时再试**，不要循环重试——会延长 cooldown。这段时间可以跑 `hive-mp sync --repair`（不调用 WeChat API）补未完成的文章。

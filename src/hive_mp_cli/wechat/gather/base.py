@@ -79,18 +79,36 @@ def random_sleep(min_s: int, max_s: int, label: str = "") -> None:
 def make_api_from_token() -> WeChatAPI:
     """Construct a WeChatAPI with persisted token + cookie applied."""
     api = WeChatAPI()
-    token = token_store.get("token")
-    cookie_str = token_store.get("cookie")
+    data = token_store.load() or {}
+    token = data.get("token") or ""
+    cookie_str = data.get("cookie") or ""
     if not token:
         raise InvalidSessionError("No token saved. Run `hive-mp login`.")
+    cookies = data.get("cookies") or []
+    if isinstance(cookies, list) and cookies:
+        api.token = token
+        for cookie in cookies:
+            if not isinstance(cookie, dict) or not cookie.get("name"):
+                continue
+            kwargs = {
+                "name": cookie.get("name"),
+                "value": cookie.get("value", ""),
+                "domain": cookie.get("domain") or "mp.weixin.qq.com",
+                "path": cookie.get("path") or "/",
+            }
+            if cookie.get("expires"):
+                kwargs["expires"] = cookie["expires"]
+            api.session.cookies.set(**kwargs)
+        api.cookies = {c.name: c.value for c in api.session.cookies}
+        return api
+
     cookie_dict: dict[str, str] = {}
-    for pair in (cookie_str or "").split(";"):
+    for pair in cookie_str.split(";"):
         pair = pair.strip()
         if not pair or "=" not in pair:
             continue
         k, v = pair.split("=", 1)
         cookie_dict[k.strip()] = v.strip()
-    api.restore_session(token, cookie_dict)
+    api.restore_session(str(token), cookie_dict)
     return api
-
 

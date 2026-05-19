@@ -74,6 +74,7 @@ def perform_login(
     payload = {
         "token": info["token"],
         "cookies_str": info["cookies_str"],
+        "cookies": info["cookie_list"],
         "fingerprint": info["fingerprint"],
         "expiry": expiry,
     }

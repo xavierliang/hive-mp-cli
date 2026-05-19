@@ -25,8 +25,12 @@ def save(token_data: dict[str, Any], ext_data: dict[str, Any] | None = None) -> 
         "fingerprint": token_data.get("fingerprint", ""),
         "expiry": token_data.get("expiry") or {},
     }
-    if ext_data:
-        payload["ext_data"] = ext_data
+    cookies = token_data.get("cookies") or token_data.get("cookie_list")
+    if cookies:
+        payload["cookies"] = cookies
+    ext_payload = ext_data or token_data.get("ext_data")
+    if ext_payload:
+        payload["ext_data"] = ext_payload
     PATHS.home.mkdir(parents=True, exist_ok=True)
     # umask 0o077 ensures the file is created mode 0o600 even on filesystems
     # where the post-hoc chmod below silently fails (e.g. some network mounts).

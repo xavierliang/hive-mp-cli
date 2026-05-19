@@ -49,6 +49,8 @@ hive-mp doctor
 ## Features
 
 - `hive-mp login` — QR login (scan with WeChat). Pure HTTP, no browser launch
+- `hive-mp refresh` — refresh live token/cookies without QR scan; exits 3 if the
+  server-side session is already expired
 - `hive-mp account add/list/remove/info` — manage subscribed public accounts
 - `hive-mp sync [name] [--mode api|web]` — pull article list + body
   - **web mode** (default): browser fetches article body, more robust against
@@ -80,6 +82,7 @@ Both `hive-mp` and `hive-mp-cli` binaries are registered.
 ```bash
 hive-mp login                              # scan QR with WeChat (terminal ASCII + PNG)
 hive-mp status                             # verify login remotely + show local expiry
+hive-mp refresh --if-expiring-within 48h   # renew live cookies; safe for cron/launchd
 hive-mp account add "阮一峰的网络日志"
 hive-mp sync "阮一峰的网络日志" --pages 1
 ls ~/.hive-mp/articles/阮一峰的网络日志/    # → markdown files
@@ -226,9 +229,9 @@ tested but designed to be debuggable through `~/.hive-mp/logs/`.
 
 ## Known limitations
 
-- **Token expiry is server-controlled**: `hive-mp status` verifies the stored
-  token/cookies against WeChat; re-run `hive-mp login` when remote verification
-  fails
+- **Token expiry is server-controlled**: `hive-mp refresh` can extend a still-live
+  session without QR scan; re-run `hive-mp login` after WeChat has already
+  rejected the stored session
 - **Frequency control 200013**: a triggered account aborts that sync; retry
   later
 - **Image hosting**: markdown keeps original `mmbiz.qpic.cn` URLs, no local

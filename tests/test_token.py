@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from hive_mp_cli.auth import token as token_store
+from hive_mp_cli.wechat.gather.base import make_api_from_token
 from hive_mp_cli.wechat.api import cookie_expire
 
 
@@ -21,6 +22,49 @@ def test_save_and_load_round_trip(tmp_home: Path) -> None:
     assert loaded["token"] == "abcdef123456"
     assert loaded["cookie"] == "k1=v1; k2=v2"
     assert loaded["fingerprint"] == "fp-xyz"
+
+
+def test_save_preserves_full_cookie_list(tmp_home: Path) -> None:
+    cookies = [{"name": "slave_sid", "value": "v", "domain": "mp.weixin.qq.com", "path": "/"}]
+    token_store.save(
+        {
+            "token": "abcdef123456",
+            "cookies_str": "slave_sid=v",
+            "cookies": cookies,
+            "expiry": {"expiry_timestamp": time.time() + 3600},
+        }
+    )
+
+    loaded = token_store.load()
+
+    assert loaded is not None
+    assert loaded["cookies"] == cookies
+
+
+def test_make_api_from_token_prefers_full_cookie_list(tmp_home: Path) -> None:
+    token_store.save(
+        {
+            "token": "abcdef123456",
+            "cookies_str": "slave_sid=string-value",
+            "cookies": [
+                {
+                    "name": "slave_sid",
+                    "value": "full-value",
+                    "domain": "mp.weixin.qq.com",
+                    "path": "/",
+                    "expires": int(time.time()) + 3600,
+                }
+            ],
+            "expiry": {"expiry_timestamp": time.time() + 3600},
+        }
+    )
+
+    api = make_api_from_token()
+
+    cookies = list(api.session.cookies)
+    assert api.token == "abcdef123456"
+    assert cookies[0].value == "full-value"
+    assert cookies[0].domain == "mp.weixin.qq.com"
 
 
 def test_save_skips_when_no_token(tmp_home: Path) -> None:

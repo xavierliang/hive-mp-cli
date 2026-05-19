@@ -123,7 +123,7 @@ _LOGIN_OK_INDICATORS = (
     "wx_app_name", "user_name", "nick_name", "head_img", "account_list", "data_ticket",
 )
 _LOGIN_FAIL_INDICATORS = (
-    "请重新登录", "登录超时", "session过期", "invalid session", "请扫码登录", "loginpage",
+    "请重新登录", "登录超时", "session过期", "invalid session", "请扫码登录",
 )
 
 _DEFAULT_HEADERS = {
@@ -359,33 +359,43 @@ class WeChatAPI:
                 "status": "network_error",
                 "message": safe_exc(exc),
             }
-        if "home" not in resp.url:
+        return self._classify_home_response(resp.url, resp.text)
+
+    def _classify_home_response(self, url: str, body: str) -> dict[str, Any]:
+        if "home" not in url:
             return {
                 "checked": True,
                 "logged_in": False,
                 "status": "redirected",
                 "message": "WeChat redirected away from the home page.",
             }
-        body = resp.text
-        if any(s in body for s in _LOGIN_FAIL_INDICATORS):
-            return {
-                "checked": True,
-                "logged_in": False,
-                "status": "login_required",
-                "message": "WeChat home page shows a login prompt.",
-            }
-        if any(s in body for s in _LOGIN_OK_INDICATORS):
+        ok_hits = [s for s in _LOGIN_OK_INDICATORS if s in body]
+        fail_hits = [s for s in _LOGIN_FAIL_INDICATORS if s in body]
+        if ok_hits:
             return {
                 "checked": True,
                 "logged_in": True,
                 "status": "ok",
                 "message": "WeChat home page accepted the stored session.",
+                "ok_hits": ok_hits,
+                "fail_hits": fail_hits,
+            }
+        if fail_hits:
+            return {
+                "checked": True,
+                "logged_in": False,
+                "status": "login_required",
+                "message": "WeChat home page shows a login prompt.",
+                "ok_hits": ok_hits,
+                "fail_hits": fail_hits,
             }
         return {
             "checked": True,
             "logged_in": None,
             "status": "unknown",
             "message": "WeChat home page loaded, but login markers were not recognized.",
+            "ok_hits": ok_hits,
+            "fail_hits": fail_hits,
         }
 
     # ----------------------------------------------------- search & list
